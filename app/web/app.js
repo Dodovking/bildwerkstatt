@@ -357,7 +357,7 @@ let infoNachHardware = false;
 async function fluxAlsStandard() {
   if (!z.info || infoNachHardware) return;
   infoNachHardware = true;
-  z.info = await api("/api/info");
+  try { z.info = await api("/api/info"); } catch { infoNachHardware = false; return; }
   if (z.modellV < 3) {
     z.modellV = 3;
     const f = modellInfo("flux");
