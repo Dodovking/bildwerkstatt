@@ -10,7 +10,7 @@ Beim ersten Start installiert sich Lumen nach `E:\KI\BildWerkstatt` (ohne Laufwe
 
 ## Funktionen
 
-- Beschreibung auf Deutsch – wird lokal ins Englische übersetzt (Helsinki-NLP opus-mt-de-en)
+- Beschreibung auf Deutsch – eine lokale Prompt-KI (Qwen3-4B-Instruct, ca. 8 GB, läuft auf der Grafikkarte) versteht den Wunsch, erkennt Namen (z. B. Pokémon: Bisasam → Bulbasaur) und formuliert einen englischen Bild-Prompt. Ohne passende Grafikkarte: Übersetzung mit Helsinki-NLP opus-mt-de-en + Namensliste
 - Modelle: Lumen Turbo (DreamShaper XL Lightning), Lumen Foto (Juggernaut XL), Lumen Vision (SDXL 1.0), Lumen Anime (Animagine XL 3.1) – je ~7 GB, Download beim ersten Gebrauch
 - Stile, Formate, Qualitätsstufen, 1–4 Varianten, Prompt-Stärke, Seed, Negativ-Beschreibung
 - Bild → Bild, Variationen, Hochskalieren 2×, Hintergrund entfernen (lokal, ONNX)

@@ -96,7 +96,7 @@ def abbrechen():
 
 @app.post("/api/uebersetzen")
 def uebersetzen(daten: dict):
-    return {"text": werk.uebersetzen(daten.get("text", ""))}
+    return {"text": werk.prompt_verbessern(daten.get("text", ""), daten.get("zweck") or "bild", vorschau=True)}
 
 
 @app.post("/api/einstellungen")

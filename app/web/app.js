@@ -537,10 +537,12 @@ function uebersetzungAnzeigen() {
   if (!t || !z.uebersetzen || !z.status?.uebersetzer) { el.hidden = true; return; }
   uebTimer = setTimeout(async () => {
     try {
-      const r = await api("/api/uebersetzen", { body: { text: t } });
-      if (r.text && r.text.toLowerCase() !== t.toLowerCase()) { el.textContent = "→ für die KI: " + r.text; el.hidden = false; } else el.hidden = true;
+      const r = await api("/api/uebersetzen", { body: { text: t, zweck: z.grafik ? z.grafikZweck : "bild" } });
+      if ($("#prompt").value.trim() !== t) return;
+      const pre = z.status?.prompt_ki ? "✦ Prompt-KI versteht: " : "→ für die KI: ";
+      if (r.text && r.text.toLowerCase() !== t.toLowerCase()) { el.textContent = pre + r.text; el.hidden = false; } else el.hidden = true;
     } catch { el.hidden = true; }
-  }, 900);
+  }, 1200);
 }
 
 // ---------- Willkommen (erstes Modell) ----------
@@ -618,7 +620,8 @@ function einstellungenDialog() {
       <span>Bilder-Ordner</span><code>${esc(z.info.bilder_ordner)}</code>
       ${z.host ? `<span>Programm-Ordner</span><code>${esc(z.host.wurzel)}</code>` : ""}
     </div>
-    <label class="schalter" style="margin-top:16px"><input type="checkbox" id="e-ueb" ${z.uebersetzen ? "checked" : ""}> Deutsche Eingaben lokal ins Englische übersetzen (bessere Ergebnisse)</label>
+    <label class="schalter" style="margin-top:16px"><input type="checkbox" id="e-ueb" ${z.uebersetzen ? "checked" : ""}> Prompt-KI: Beschreibung lokal verstehen, Namen erkennen (z. B. Bisasam → Bulbasaur) und für die Bild-KI ausformulieren</label>
+    ${z.status?.prompt_ki_moeglich ? `<p class="klein">Prompt-KI (Qwen3 4B, ${z.status?.prompt_ki ? "bereit" : (z.status?.downloads?._prompt_ki?.status === "laeuft" ? `wird geladen … ${prozent(z.status.downloads._prompt_ki)} %` : "nicht geladen")})</p>` : ""}
     <div class="knoepfe">
       ${z.host ? '<button class="klein-knopf" id="e-log">Protokoll öffnen</button>' : ""}
       <button class="klein-knopf" id="e-ordner">Bilder-Ordner öffnen</button>

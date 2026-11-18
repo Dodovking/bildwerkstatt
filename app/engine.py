@@ -72,6 +72,25 @@ MODELLE = {
 STANDARD_MODELL = "lightning"
 VAE_REPO = "madebyollin/sdxl-vae-fp16-fix"
 UEBERSETZER_REPO = "Helsinki-NLP/opus-mt-de-en"
+PROMPT_KI_REPO = "Qwen/Qwen3-4B-Instruct-2507"
+PROMPT_KI_GB = 8.1
+NAMEN = json.loads((Path(__file__).resolve().parent / "namen.json").read_text("utf-8"))
+_NAMEN_MUSTER = re.compile(r"\b(" + "|".join(sorted(map(re.escape, NAMEN), key=len, reverse=True)) + r")(s)?\b", re.IGNORECASE)
+_NAMEN_KLEIN = {k.lower(): v for k, v in NAMEN.items()}
+
+PROMPT_KI_REGELN = (
+    "You turn a user's image wish (often German, casual, maybe with typos) into one English prompt for Stable Diffusion XL. "
+    "Output ONLY the prompt: no quotes, no explanation, no 'I want'. "
+    "Replace every German or localized name of a known character, creature, brand, place or franchise with its official English name "
+    "and add a few words describing its look (e.g. Bulbasaur, small green quadruped Pokemon with a plant bulb on its back). "
+    "Keep every subject, action, count, color and place the user asked for and never add new subjects. "
+    "Do not add art-style or medium words (realistic, photo, anime, painting, 3d) unless the user asked for a style. "
+)
+PROMPT_KI_BILD = PROMPT_KI_REGELN + "Add helpful visual details (composition, lighting, setting). Comma-separated phrases, at most 60 words."
+PROMPT_KI_GRAFIK = PROMPT_KI_REGELN + (
+    "This becomes a single emote or sticker on a plain background: describe only the subject, its pose, expression and colors; "
+    "no background, no scenery. Comma-separated phrases, at most 30 words."
+)
 
 STILE = {
     "kein": ("Kein Stil", "{p}"),
@@ -160,6 +179,9 @@ class Werk:
         self.lock = threading.Lock()
         self.uebersetzer = None
         self.uebersetzer_lock = threading.Lock()
+        self.prompt_ki = None
+        self.prompt_ki_lock = threading.Lock()
+        self.prompt_cache = {}
         self.downloads = {}
         self.auftraege = []
         self.aktiv = None
@@ -200,6 +222,8 @@ class Werk:
             torch.backends.cudnn.allow_tf32 = True
         if not self._uebersetzer_vorhanden():
             self.modell_herunterladen("_uebersetzer")
+        if self._prompt_ki_moeglich() and not self._ist_installiert("_prompt_ki"):
+            self.modell_herunterladen("_prompt_ki")
         if not self._freisteller_pfad().exists():
             threading.Thread(target=self._freisteller_vorladen, daemon=True).start()
 
@@ -227,6 +251,11 @@ class Werk:
                 "config.json", "generation_config.json", "pytorch_model.bin",
                 "source.spm", "target.spm", "tokenizer_config.json", "vocab.json",
             ]
+        if schluessel == "_prompt_ki":
+            return PROMPT_KI_REPO, [
+                "config.json", "generation_config.json", "model*.safetensors", "model.safetensors.index.json",
+                "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",
+            ]
         if schluessel == "_vae":
             return VAE_REPO, ["config.json", "diffusion_pytorch_model.safetensors"]
         m = MODELLE[schluessel]
@@ -250,7 +279,7 @@ class Werk:
         return liste
 
     def modell_herunterladen(self, schluessel):
-        if schluessel not in MODELLE and schluessel not in ("_uebersetzer", "_vae"):
+        if schluessel not in MODELLE and schluessel not in ("_uebersetzer", "_vae", "_prompt_ki"):
             raise Fehler("Unbekanntes Modell")
         d = self.downloads.get(schluessel)
         if d and d["status"] == "laeuft":
@@ -313,6 +342,7 @@ class Werk:
 
     def _lade_pipeline(self, schluessel):
         if self.aktuelles_modell == schluessel and self.pipe is not None:
+            self._pipe_auf_gpu()
             return
         torch = self.torch
         from diffusers import AutoencoderKL, AutoPipelineForImage2Image, StableDiffusionXLPipeline
@@ -332,6 +362,9 @@ class Werk:
             variant=None if TESTMODELL else m["variante"], use_safetensors=None if TESTMODELL else True,
         )
         pipe.scheduler = _scheduler(m["sampler"], pipe.scheduler.config)
+        if self.geraet == "cuda":
+            with self.prompt_ki_lock:
+                self._ki_auslagern()
         pipe.to(self.geraet)
         pipe.set_progress_bar_config(disable=True)
         pipe.vae.enable_tiling()
@@ -339,6 +372,77 @@ class Werk:
         self.pipe_i2i = AutoPipelineForImage2Image.from_pipe(pipe)
         self.pipe_i2i.set_progress_bar_config(disable=True)
         self.aktuelles_modell = schluessel
+
+    # ---------- Prompt-KI ----------
+    def _prompt_ki_moeglich(self):
+        return self.geraet == "cuda" and (self.vram_gb or 0) >= 10 and not TESTMODELL
+
+    def prompt_ki_bereit(self):
+        return self._prompt_ki_moeglich() and self._ist_installiert("_prompt_ki")
+
+    def prompt_verbessern(self, text, zweck="bild", vorschau=False):
+        text = _namen_ersetzen((text or "").strip())
+        if not text:
+            return text
+        grafik = zweck not in (None, "bild")
+        schluessel = (text, grafik)
+        if schluessel in self.prompt_cache:
+            return self.prompt_cache[schluessel]
+        erg = None
+        if self.prompt_ki_bereit() and not (vorschau and self.aktiv):
+            try:
+                erg = self._prompt_ki_fragen(text, grafik)
+            except Exception:
+                traceback.print_exc()
+                self._ki_auslagern()
+        if not erg:
+            return self.uebersetzen(text)
+        if len(self.prompt_cache) > 300:
+            self.prompt_cache.clear()
+        self.prompt_cache[schluessel] = erg
+        return erg
+
+    def _prompt_ki_fragen(self, text, grafik):
+        torch = self.torch
+        with self.lock, self.prompt_ki_lock:
+            if self.prompt_ki is None:
+                from transformers import AutoModelForCausalLM, AutoTokenizer
+
+                pfad = str(self._ordner("_prompt_ki"))
+                self.prompt_ki = (AutoTokenizer.from_pretrained(pfad), AutoModelForCausalLM.from_pretrained(pfad, dtype=torch.bfloat16).eval())
+            tok, modell = self.prompt_ki
+            if modell.device.type != "cuda":
+                if _frei_gb(torch) < PROMPT_KI_GB + 0.8:
+                    self._pipe_auslagern()
+                modell.to("cuda")
+            nachrichten = [
+                {"role": "system", "content": PROMPT_KI_GRAFIK if grafik else PROMPT_KI_BILD},
+                {"role": "user", "content": text},
+            ]
+            ein = tok.apply_chat_template(nachrichten, add_generation_prompt=True, return_tensors="pt", return_dict=True).to("cuda")
+            with torch.inference_mode():
+                aus = modell.generate(**ein, max_new_tokens=140, do_sample=False)
+            antwort = tok.decode(aus[0][ein["input_ids"].shape[1]:], skip_special_tokens=True)
+        zeile = next((z.strip() for z in antwort.splitlines() if z.strip()), "")
+        zeile = zeile.strip().strip('"\'„“”`').rstrip(".").strip()
+        return zeile if 3 <= len(zeile) <= 700 else None
+
+    def _ki_auslagern(self):
+        if self.prompt_ki and self.prompt_ki[1].device.type == "cuda":
+            self.prompt_ki[1].to("cpu")
+            self.torch.cuda.empty_cache()
+
+    def _pipe_auslagern(self):
+        if self.pipe is not None and self.pipe.device.type == "cuda":
+            self.pipe.to("cpu")
+            self.torch.cuda.empty_cache()
+
+    def _pipe_auf_gpu(self):
+        if self.geraet != "cuda" or self.pipe is None or self.pipe.device.type == "cuda":
+            return
+        with self.prompt_ki_lock:
+            self._ki_auslagern()
+        self.pipe.to("cuda")
 
     # ---------- Übersetzung ----------
     def uebersetzen(self, text):
@@ -411,7 +515,9 @@ class Werk:
             "zuletzt": self.zuletzt,
             "downloads": self.downloads,
             "modell_geladen": self.aktuelles_modell,
-            "uebersetzer": self._uebersetzer_vorhanden(),
+            "uebersetzer": self._uebersetzer_vorhanden() or self.prompt_ki_bereit(),
+            "prompt_ki": self.prompt_ki_bereit(),
+            "prompt_ki_moeglich": self._prompt_ki_moeglich(),
         }
 
     def beschaeftigt(self):
@@ -459,10 +565,6 @@ class Werk:
         modus = d.get("modus", "text")
         schluessel = d.get("modell") or STANDARD_MODELL
         m = MODELLE[schluessel]
-        if self.aktuelles_modell != schluessel:
-            a["hinweis"] = f"Lade {m['name']} in die Grafikkarte …"
-            with self.lock:
-                self._lade_pipeline(schluessel)
 
         quelle_meta = {}
         eingabe = None
@@ -479,17 +581,22 @@ class Werk:
             prompt_original = quelle_meta.get("prompt_original", "")
         negativ_original = (d.get("negativ") or "").strip()
         uebersetzen = d.get("uebersetzen", True)
-        if uebersetzen and (prompt_original or negativ_original):
-            a["hinweis"] = "Übersetze Beschreibung …"
-        prompt_en = self.uebersetzen(prompt_original) if uebersetzen else prompt_original
-        negativ_en = self.uebersetzen(negativ_original) if uebersetzen else negativ_original
-        if not prompt_original and quelle_meta.get("prompt"):
-            prompt_en = quelle_meta["prompt"]
-
         stil = d.get("stil") or quelle_meta.get("stil") or "kein"
         zweck = d.get("zweck") or quelle_meta.get("zweck") or "bild"
         if zweck not in ZWECKE:
             zweck = "bild"
+        prompt_ki = uebersetzen and bool(prompt_original) and self.prompt_ki_bereit()
+        if uebersetzen and (prompt_original or negativ_original):
+            a["hinweis"] = "Prompt-KI versteht deine Beschreibung …" if prompt_ki else "Übersetze Beschreibung …"
+        prompt_en = self.prompt_verbessern(prompt_original, zweck) if uebersetzen else prompt_original
+        negativ_en = self.uebersetzen(_namen_ersetzen(negativ_original)) if uebersetzen else negativ_original
+        if not prompt_original and quelle_meta.get("prompt"):
+            prompt_en = quelle_meta["prompt"]
+
+        if self.aktuelles_modell != schluessel:
+            a["hinweis"] = f"Lade {m['name']} in die Grafikkarte …"
+        with self.lock:
+            self._lade_pipeline(schluessel)
         vorlage = STILE.get(stil, STILE["kein"])[1]
         prompt = vorlage.replace("{p}", prompt_en or "") if prompt_en else vorlage.replace("{p}", "").strip(", ")
         if ZWECKE[zweck][1]:
@@ -579,7 +686,7 @@ class Werk:
                 "negativ": negativ, "stil": stil, "modell": schluessel, "modell_name": m["name"],
                 "seed": s, "schritte": schritte, "cfg": cfg, "breite": bild.width, "hoehe": bild.height,
                 "modus": modus, "qualitaet": qualitaet, "format": d.get("format"), "zweck": zweck,
-                "transparent": freistellen, "cfg_prozent": d.get("cfg_prozent"), "gruppe": a["id"],
+                "transparent": freistellen, "prompt_ki": prompt_ki, "cfg_prozent": d.get("cfg_prozent"), "gruppe": a["id"],
                 "dauer_s": round(_jetzt() - start, 1), "erstellt": datetime.now().isoformat(timespec="seconds"),
             }
             if modus != "text":
@@ -841,6 +948,14 @@ def _ordnergroesse(ordner):
                 except OSError:
                     pass
     return gesamt
+
+
+def _namen_ersetzen(text):
+    return _NAMEN_MUSTER.sub(lambda t: _NAMEN_KLEIN[t.group(1).lower()], text or "")
+
+
+def _frei_gb(torch):
+    return torch.cuda.mem_get_info()[0] / 1024**3
 
 
 def _wirkt_deutsch(text):
