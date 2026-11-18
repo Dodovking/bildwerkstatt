@@ -172,6 +172,7 @@ class Werk:
         self._metadaten_cache = {}
         self.freisteller = None
         self.freisteller_lock = threading.Lock()
+        self.freisteller_dl_lock = threading.Lock()
         threading.Thread(target=self._arbeiter, daemon=True).start()
         threading.Thread(target=self._vorbereiten, daemon=True).start()
 
@@ -199,6 +200,8 @@ class Werk:
             torch.backends.cudnn.allow_tf32 = True
         if not self._uebersetzer_vorhanden():
             self.modell_herunterladen("_uebersetzer")
+        if not self._freisteller_pfad().exists():
+            threading.Thread(target=self._freisteller_vorladen, daemon=True).start()
 
     def hardware(self):
         return {
@@ -568,6 +571,8 @@ class Werk:
                 raise Abbruch()
             if freistellen:
                 a["hinweis"] = f"Bild {i + 1}: Hintergrund wird entfernt …"
+                if not self._freisteller_pfad().exists():
+                    a["hinweis"] = "Freistell-Modell wird einmalig geladen (ca. 180 MB) …"
                 bild = self.freistellen(bild, rand=zweck == "sticker")
             meta = {
                 "prompt_original": prompt_original, "prompt": prompt, "negativ_original": negativ_original,
@@ -611,11 +616,25 @@ class Werk:
             return self.freisteller
         import onnxruntime as ort
 
-        ziel = self._ordner("_freisteller") / "isnet-general-use.onnx"
-        if not ziel.exists():
-            self._datei_laden("_freisteller", FREISTELL_URL, ziel)
+        ziel = self._freisteller_sichern()
         self.freisteller = ort.InferenceSession(str(ziel), providers=["CPUExecutionProvider"])
         return self.freisteller
+
+    def _freisteller_pfad(self):
+        return self._ordner("_freisteller") / "isnet-general-use.onnx"
+
+    def _freisteller_sichern(self):
+        ziel = self._freisteller_pfad()
+        with self.freisteller_dl_lock:
+            if not ziel.exists():
+                self._datei_laden("_freisteller", FREISTELL_URL, ziel)
+        return ziel
+
+    def _freisteller_vorladen(self):
+        try:
+            self._freisteller_sichern()
+        except Exception:
+            traceback.print_exc()
 
     def _datei_laden(self, schluessel, url, ziel):
         import urllib.request
