@@ -25,6 +25,18 @@ werk = Werk()
 letzter_herzschlag = time.time()
 
 
+ERLAUBTE_HOSTS = {f"127.0.0.1:{PORT}", f"localhost:{PORT}"}
+
+
+@app.middleware("http")
+async def _nur_lokal(anfrage, weiter):
+    host = anfrage.headers.get("host", "")
+    herkunft = anfrage.headers.get("origin")
+    if host not in ERLAUBTE_HOSTS or (herkunft and herkunft.split("://", 1)[-1] not in ERLAUBTE_HOSTS):
+        return JSONResponse({"fehler": "Zugriff verweigert"}, status_code=403)
+    return await weiter(anfrage)
+
+
 @app.exception_handler(Fehler)
 def _fehler(_, e):
     return JSONResponse({"fehler": str(e)}, status_code=400)

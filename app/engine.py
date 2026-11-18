@@ -572,7 +572,7 @@ class Werk:
             meta = {
                 "prompt_original": prompt_original, "prompt": prompt, "negativ_original": negativ_original,
                 "negativ": negativ, "stil": stil, "modell": schluessel, "modell_name": m["name"],
-                "seed": s, "schritte": schritte, "cfg": cfg, "breite": breite, "hoehe": hoehe,
+                "seed": s, "schritte": schritte, "cfg": cfg, "breite": bild.width, "hoehe": bild.height,
                 "modus": modus, "qualitaet": qualitaet, "format": d.get("format"), "zweck": zweck,
                 "transparent": freistellen, "cfg_prozent": d.get("cfg_prozent"), "gruppe": a["id"],
                 "dauer_s": round(_jetzt() - start, 1), "erstellt": datetime.now().isoformat(timespec="seconds"),
@@ -753,7 +753,7 @@ class Werk:
         except Exception:
             return {}
 
-    def galerie(self, anzahl=300):
+    def galerie(self, anzahl=None):
         dateien = sorted((p for p in BILDER_ORDNER.rglob("*.png") if EXPORT_ORDNER not in p.parents), key=lambda p: p.stat().st_mtime, reverse=True)[:anzahl]
         return [{"name": p.relative_to(BILDER_ORDNER).as_posix(), **self.metadaten(p)} for p in dateien]
 

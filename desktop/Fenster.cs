@@ -393,11 +393,16 @@ public class Fenster : Form
             if (ist != erwartet) throw new Exception("Der Download ist beschädigt (Prüfsumme stimmt nicht). Bitte erneut versuchen.");
             Senden(new JsonObject { ["typ"] = "update-fortschritt", ["prozent"] = 100, ["text"] = "Installiere und starte neu …" });
             Log($"Update {Version} -> {r.Ver}");
-            ServerStoppen();
             var alt = Path.Combine(Path.GetDirectoryName(exePfad)!, "Lumen.alt.exe");
             if (File.Exists(alt)) File.Delete(alt);
             File.Move(exePfad, alt);
-            File.Move(neu, exePfad);
+            try { File.Move(neu, exePfad); }
+            catch
+            {
+                try { if (!File.Exists(exePfad)) File.Move(alt, exePfad); } catch (Exception ex2) { Log("Update-Rückbau: " + ex2); }
+                throw;
+            }
+            ServerStoppen();
             NachEnde = () => Process.Start(new ProcessStartInfo(exePfad, "--warten") { UseShellExecute = false });
             Close();
         }

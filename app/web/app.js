@@ -303,7 +303,7 @@ async function erzeugen(extra = {}) {
 }
 function aufQuelle(b, modus, extra = {}) {
   return erzeugen({
-    modus, quelle: b.name, eingabebild: null, prompt: "", negativ: "", stil: b.stil, zweck: b.zweck || "bild",
+    modus, quelle: b.name, eingabebild: null, prompt: "", negativ: b.negativ_original || "", stil: b.stil, zweck: b.zweck || "bild",
     freistellen: !!b.transparent, modell: z.modell, ...extra,
   });
 }
@@ -338,8 +338,9 @@ async function aktualisieren() {
   if (s.galerie_version !== z.galerieVersion && !z.auftrag) await galerieLaden();
   const dlAktiv = Object.values(s.downloads || {}).some((d) => d.status === "laeuft");
   const dlVorher = vorher && Object.values(vorher.downloads || {}).some((d) => d.status === "laeuft");
+  const dlBeendet = vorher && Object.entries(vorher.downloads || {}).some(([k, d]) => d.status === "laeuft" && s.downloads?.[k]?.status !== "laeuft");
   if (dlAktiv || dlVorher) {
-    if (dlVorher && !dlAktiv) z.info = await api("/api/info");
+    if (dlBeendet) z.info = await api("/api/info");
     modellZeichnen(); willkommenAktualisieren();
   } else losZeichnen();
   planen(a || z.auftrag || dlAktiv ? 600 : 2500);
@@ -489,9 +490,10 @@ async function aktion(name) {
     if (name === "favorit") { await sammlung("umschalten", "Favoriten", b.name); auswahlZeichnen(); }
     if (name === "sammlung") sammlungDialog(b);
     if (name === "uebernehmen") {
-      z.prompt = b.prompt_original || ""; z.seed = b.seed ?? "";
+      z.prompt = b.prompt_original || ""; z.negativ = b.negativ_original || ""; z.seed = b.seed ?? "";
+      if (b.staerke != null) z.staerke = Math.round(b.staerke * 100);
       if (b.modell && modellInfo(b.modell)) z.modell = b.modell;
-      if (istGrafik(b)) { z.grafikZweck = b.zweck; z.grafikStil = b.stil || "kein"; z.grafik = true; }
+      if (istGrafik(b)) { z.grafikZweck = b.zweck; z.grafikStil = b.stil || "kein"; z.freistellen = !!b.transparent; z.grafik = true; }
       else { if (b.stil) z.stil = b.stil; if (b.format) z.format = b.format; z.grafik = false; }
       if (b.qualitaet) z.qualitaet = b.qualitaet;
       if (b.cfg_prozent != null) z.cfg = b.cfg_prozent;
@@ -653,7 +655,7 @@ function verbinden() {
   $("#prompt-text").onclick = () => promptBearbeiten(true);
   $("#prompt").oninput = (e) => { z.prompt = e.target.value; uebersetzungAnzeigen(); };
   $("#prompt").onkeydown = (e) => {
-    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); erzeugen(); }
+    if (e.key === "Enter" && !e.shiftKey && !e.ctrlKey) { e.preventDefault(); erzeugen(); }
     if (e.key === "Escape") { z.prompt = $("#prompt").value.trim(); promptBearbeiten(false); }
   };
   $("#datei").onchange = (e) => { dateiLesen(e.target.files[0]); e.target.value = ""; };
@@ -683,7 +685,10 @@ function verbinden() {
   $("#seed").onchange = (e) => { z.seed = e.target.value === "" ? "" : Math.max(0, Math.floor(Number(e.target.value))); seedZu(); };
   $("#seed").onkeydown = (e) => { if (e.key === "Enter") e.target.blur(); };
   $("#generieren").onclick = () => erzeugen();
-  $("#abbrechen").onclick = () => api("/api/abbrechen", { method: "POST" }).catch(() => {});
+  $("#abbrechen").onclick = async () => {
+    try { await api("/api/abbrechen", { method: "POST" }); } catch { return; }
+    if (z.auftrag && z.status?.aktiv?.id !== z.auftrag) { z.auftrag = null; $("#fortschritt").hidden = true; meldung("Abgebrochen.", true); }
+  };
   $$("#aktionen button, #werkzeuge button").forEach((b) => (b.onclick = () => aktion(b.dataset.aktion)));
   $$("[data-zoom]").forEach((b) => (b.onclick = () => zoomen(Number(b.dataset.zoom))));
   $("#vollbild").onclick = () => { if (z.auswahl) { $("#voll-bild").src = bildUrl(z.auswahl.name); $("#vollansicht").hidden = false; } };
