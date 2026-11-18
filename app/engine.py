@@ -438,11 +438,12 @@ class Werk:
             self.torch.cuda.empty_cache()
 
     def _pipe_auf_gpu(self):
-        if self.geraet != "cuda" or self.pipe is None or self.pipe.device.type == "cuda":
+        if self.geraet != "cuda" or self.pipe is None:
             return
         with self.prompt_ki_lock:
             self._ki_auslagern()
-        self.pipe.to("cuda")
+        if self.pipe.device.type != "cuda":
+            self.pipe.to("cuda")
 
     # ---------- Übersetzung ----------
     def uebersetzen(self, text):
