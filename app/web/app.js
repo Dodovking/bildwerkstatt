@@ -353,13 +353,18 @@ function hardwareZeichnen(h) {
   $("#gpu-text").textContent = t; $("#avatar").title = t;
   if (h?.bereit) fluxAlsStandard();
 }
+let infoNachHardware = false;
 async function fluxAlsStandard() {
-  if (!z.info || z.modellV >= 3) return;
-  z.modellV = 3;
+  if (!z.info || infoNachHardware) return;
+  infoNachHardware = true;
   z.info = await api("/api/info");
-  const f = modellInfo("flux");
-  if (f?.installiert && f?.verfuegbar) z.modell = "flux";
-  modellZeichnen(); speichern();
+  if (z.modellV < 3) {
+    z.modellV = 3;
+    const f = modellInfo("flux");
+    if (f?.installiert && f?.verfuegbar) z.modell = "flux";
+    speichern();
+  }
+  modellZeichnen();
 }
 
 // ---------- Galerie ----------
