@@ -1,0 +1,867 @@
+import base64
+import io
+import json
+import math
+import os
+import random
+import re
+import threading
+import time
+import traceback
+import uuid
+from datetime import datetime
+from pathlib import Path
+
+from PIL import Image, PngImagePlugin
+
+BASIS = Path(os.environ.get("BW_BASIS", Path(__file__).resolve().parent.parent))
+MODELL_ORDNER = Path(os.environ.get("BW_MODELLE", BASIS / "Modelle"))
+BILDER_ORDNER = Path(os.environ.get("BW_BILDER", BASIS / "Bilder"))
+EINSTELLUNGEN = BASIS / "einstellungen.json"
+SAMMLUNGEN = BASIS / "sammlungen.json"
+EXPORT_ORDNER = BILDER_ORDNER / "Export"
+TESTMODELL = os.environ.get("BW_TESTMODELL")
+
+MODELL_ORDNER.mkdir(parents=True, exist_ok=True)
+BILDER_ORDNER.mkdir(parents=True, exist_ok=True)
+
+MODELLE = {
+    "juggernaut": {
+        "name": "Juggernaut XL",
+        "titel": "Lumen Foto",
+        "beschreibung": "Fotorealistisch – Menschen, Tiere, Landschaften, Produkte",
+        "repo": "RunDiffusion/Juggernaut-XL-v9",
+        "variante": "fp16",
+        "schritte": {"schnell": 20, "normal": 30, "hoch": 45},
+        "cfg": 5.0,
+        "sampler": "dpmpp_karras",
+    },
+    "lightning": {
+        "name": "DreamShaper XL Lightning",
+        "titel": "Lumen Turbo",
+        "beschreibung": "Turbo – sehr schnell (wenige Sekunden), vielseitig",
+        "repo": "Lykon/dreamshaper-xl-lightning",
+        "variante": "fp16",
+        "schritte": {"schnell": 4, "normal": 6, "hoch": 8},
+        "cfg": 2.0,
+        "sampler": "dpmpp",
+    },
+    "sdxl": {
+        "name": "Stable Diffusion XL 1.0",
+        "titel": "Lumen Vision",
+        "beschreibung": "Allrounder – Kunst, Illustration, Konzepte",
+        "repo": "stabilityai/stable-diffusion-xl-base-1.0",
+        "variante": "fp16",
+        "schritte": {"schnell": 20, "normal": 30, "hoch": 45},
+        "cfg": 7.0,
+        "sampler": "dpmpp_karras",
+    },
+    "anime": {
+        "name": "Animagine XL 3.1",
+        "titel": "Lumen Anime",
+        "beschreibung": "Anime & Manga",
+        "repo": "cagliostrolab/animagine-xl-3.1",
+        "variante": None,
+        "schritte": {"schnell": 20, "normal": 28, "hoch": 40},
+        "cfg": 6.0,
+        "sampler": "euler_a",
+        "prompt_zusatz": "masterpiece, best quality, very aesthetic, absurdres",
+        "negativ_zusatz": "nsfw, lowres, (bad), text, error, fewer, extra, missing, worst quality, jpeg artifacts, low quality, watermark, unfinished, displeasing, oldest, early, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]",
+    },
+}
+STANDARD_MODELL = "lightning"
+VAE_REPO = "madebyollin/sdxl-vae-fp16-fix"
+UEBERSETZER_REPO = "Helsinki-NLP/opus-mt-de-en"
+
+STILE = {
+    "kein": ("Kein Stil", "{p}"),
+    "foto": ("Foto", "{p}, professional photography, sharp focus, highly detailed, natural lighting, 8k uhd, dslr"),
+    "kino": ("Kinofilm", "cinematic film still of {p}, shallow depth of field, dramatic lighting, film grain, color graded, epic"),
+    "portrait": ("Porträt", "close-up portrait photo of {p}, 85mm lens, bokeh, soft studio lighting, detailed skin texture"),
+    "fantasy": ("Fantasy-Kunst", "epic fantasy digital painting of {p}, intricate details, magical atmosphere, artstation, concept art"),
+    "anime": ("Anime", "anime artwork of {p}, studio anime style, vibrant colors, highly detailed"),
+    "comic": ("Comic", "comic book illustration of {p}, bold ink lines, vibrant colors, halftone shading"),
+    "oel": ("Ölgemälde", "oil painting of {p}, visible brush strokes, classical masterpiece, rich colors, canvas texture"),
+    "aquarell": ("Aquarell", "watercolor painting of {p}, soft pastel colors, paper texture, delicate washes"),
+    "bleistift": ("Bleistiftzeichnung", "detailed pencil sketch of {p}, graphite, fine linework, monochrome, paper"),
+    "3d": ("3D-Render", "3d render of {p}, pixar style, octane render, soft global illumination, cute, highly detailed"),
+    "pixel": ("Pixel-Art", "pixel art of {p}, 16-bit, retro video game style, crisp pixels"),
+    "neon": ("Cyberpunk/Neon", "cyberpunk scene of {p}, neon lights, rain, futuristic city, vivid magenta and cyan"),
+    "logo": ("Logo/Icon", "minimalist flat vector logo of {p}, simple shapes, clean, centered, white background"),
+    "sticker": ("Sticker", "die-cut sticker of {p}, cute, bold outline, white border, flat colors, simple background"),
+}
+
+FREISTELL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/isnet-general-use.onnx"
+
+ZWECKE = {
+    "bild": ("Bild", None),
+    "emote": ("Emote", "twitch emote of {p}, cute expressive mascot character, big readable face, bold thick dark outline, "
+              "flat vibrant cel shading, simple shapes, centered, single subject, isolated on plain white background, "
+              "high contrast, clean vector art"),
+    "sticker": ("Sticker", "die-cut sticker of {p}, bold outline, vibrant flat colors, cute, centered, single subject, "
+                "isolated on plain white background, clean vector illustration"),
+    "abzeichen": ("Abzeichen", "badge icon of {p}, simple emblem, bold thick outline, flat vibrant colors, centered, "
+                  "isolated on plain white background, minimal details, clean vector icon"),
+}
+NEGATIV_GRAFIK = "photo, photorealistic, scenery, landscape background, multiple subjects, text, letters, watermark, blurry, gradient background, drop shadow, frame, cropped"
+
+EXPORTE = {
+    "twitch_emote": ("Twitch Emote", [112, 56, 28]),
+    "twitch_abzeichen": ("Twitch Abzeichen", [72, 36, 18]),
+    "youtube_emoji": ("YouTube Emoji", [288, 48, 24]),
+    "discord": ("Discord Emoji", [128]),
+    "sticker": ("Sticker", [512, 320]),
+}
+
+FORMATE = {
+    "quadrat": ("Quadrat 1:1", 1024, 1024),
+    "hoch": ("Hochformat 2:3", 832, 1216),
+    "quer": ("Querformat 3:2", 1216, 832),
+    "breit": ("Breitbild 16:9", 1344, 768),
+    "handy": ("Handy 9:16", 768, 1344),
+    "kino": ("Kino 21:9", 1536, 640),
+}
+
+STANDARD_NEGATIV = (
+    "lowres, blurry, worst quality, low quality, jpeg artifacts, deformed, disfigured, bad anatomy, "
+    "extra fingers, mutated hands, extra limbs, watermark, text, signature, logo, cropped"
+)
+
+SDXL_LATENT_RGB = [
+    [0.3651, 0.4232, 0.4341],
+    [-0.2533, -0.0042, 0.1068],
+    [0.1076, 0.1111, -0.0362],
+    [-0.3165, -0.2492, -0.2188],
+]
+SDXL_LATENT_BIAS = [0.1084, -0.0175, -0.0011]
+
+ENGLISCH = set("the a an of and with in on at under over is are by for from to into wearing holding his her their its this that".split())
+DEUTSCH = set("der die das den dem des ein eine einen einem einer und mit im in auf unter über ist sind von vom zum zur für aus bei als oder trägt hält".split())
+
+
+def _jetzt():
+    return time.time()
+
+
+class Fehler(Exception):
+    pass
+
+
+class Werk:
+    def __init__(self):
+        self.torch = None
+        self.geraet = "cpu"
+        self.gpu_name = None
+        self.vram_gb = None
+        self.pipe = None
+        self.pipe_i2i = None
+        self.aktuelles_modell = None
+        self.vae = None
+        self.lock = threading.Lock()
+        self.uebersetzer = None
+        self.uebersetzer_lock = threading.Lock()
+        self.downloads = {}
+        self.auftraege = []
+        self.aktiv = None
+        self.abbrechen = False
+        self.galerie_version = 0
+        self.zuletzt = None
+        self.letzte_aktivitaet = _jetzt()
+        self.bedingung = threading.Condition()
+        self.einstellungen = self._lade_einstellungen()
+        self._metadaten_cache = {}
+        self.freisteller = None
+        self.freisteller_lock = threading.Lock()
+        threading.Thread(target=self._arbeiter, daemon=True).start()
+        threading.Thread(target=self._vorbereiten, daemon=True).start()
+
+    # ---------- Einstellungen ----------
+    def _lade_einstellungen(self):
+        try:
+            return json.loads(EINSTELLUNGEN.read_text("utf-8"))
+        except Exception:
+            return {}
+
+    def speichere_einstellungen(self, daten):
+        self.einstellungen.update(daten or {})
+        EINSTELLUNGEN.write_text(json.dumps(self.einstellungen, ensure_ascii=False, indent=2), "utf-8")
+
+    # ---------- Hardware ----------
+    def _vorbereiten(self):
+        import torch
+
+        self.torch = torch
+        if torch.cuda.is_available():
+            self.geraet = "cuda"
+            self.gpu_name = torch.cuda.get_device_name(0)
+            self.vram_gb = round(torch.cuda.get_device_properties(0).total_memory / 1024**3, 1)
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+        if not self._uebersetzer_vorhanden():
+            self.modell_herunterladen("_uebersetzer")
+
+    def hardware(self):
+        return {
+            "geraet": self.geraet,
+            "gpu": self.gpu_name,
+            "vram_gb": self.vram_gb,
+            "bereit": self.torch is not None,
+        }
+
+    # ---------- Modelle & Downloads ----------
+    def _ordner(self, schluessel):
+        return MODELL_ORDNER / schluessel
+
+    def _ist_installiert(self, schluessel):
+        return (self._ordner(schluessel) / ".fertig").exists()
+
+    def _uebersetzer_vorhanden(self):
+        return self._ist_installiert("_uebersetzer")
+
+    def _download_plan(self, schluessel):
+        if schluessel == "_uebersetzer":
+            return UEBERSETZER_REPO, [
+                "config.json", "generation_config.json", "pytorch_model.bin",
+                "source.spm", "target.spm", "tokenizer_config.json", "vocab.json",
+            ]
+        if schluessel == "_vae":
+            return VAE_REPO, ["config.json", "diffusion_pytorch_model.safetensors"]
+        m = MODELLE[schluessel]
+        if TESTMODELL:
+            return TESTMODELL, None
+        v = f".{m['variante']}" if m["variante"] else ""
+        muster = ["model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*"]
+        for teil, datei in (("text_encoder", "model"), ("text_encoder_2", "model"), ("unet", "diffusion_pytorch_model"), ("vae", "diffusion_pytorch_model")):
+            muster += [f"{teil}/config.json", f"{teil}/{datei}{v}.safetensors"]
+        return m["repo"], muster
+
+    def modelle(self):
+        liste = []
+        for k, m in MODELLE.items():
+            liste.append({
+                "id": k, "name": m["name"], "titel": m["titel"], "beschreibung": m["beschreibung"], "cfg": m["cfg"],
+                "installiert": self._ist_installiert(k) and self._ist_installiert("_vae"),
+                "download": self.downloads.get(k),
+                "groesse_gb": 7.0,
+            })
+        return liste
+
+    def modell_herunterladen(self, schluessel):
+        if schluessel not in MODELLE and schluessel not in ("_uebersetzer", "_vae"):
+            raise Fehler("Unbekanntes Modell")
+        d = self.downloads.get(schluessel)
+        if d and d["status"] == "laeuft":
+            return
+        self.downloads[schluessel] = {"status": "laeuft", "geladen": 0, "gesamt": 0, "fehler": None}
+        threading.Thread(target=self._download, args=(schluessel,), daemon=True).start()
+
+    def _download(self, schluessel):
+        from huggingface_hub import HfApi, snapshot_download
+        import fnmatch
+
+        info = self.downloads[schluessel]
+        try:
+            teile = [schluessel]
+            if schluessel in MODELLE and not self._ist_installiert("_vae"):
+                teile.append("_vae")
+            plaene = []
+            for t in teile:
+                repo, muster = self._download_plan(t)
+                gesamt = 0
+                try:
+                    mi = HfApi().model_info(repo, files_metadata=True)
+                    for s in mi.siblings:
+                        if muster is None or any(fnmatch.fnmatch(s.rfilename, p) for p in muster):
+                            gesamt += s.size or 0
+                except Exception:
+                    pass
+                plaene.append((t, repo, muster, gesamt))
+            info["gesamt"] = sum(p[3] for p in plaene)
+
+            stop = threading.Event()
+
+            def messen():
+                while not stop.is_set():
+                    info["geladen"] = sum(_ordnergroesse(self._ordner(p[0])) for p in plaene)
+                    stop.wait(0.7)
+
+            threading.Thread(target=messen, daemon=True).start()
+            try:
+                for t, repo, muster, _ in plaene:
+                    ziel = self._ordner(t)
+                    ziel.mkdir(parents=True, exist_ok=True)
+                    for versuch in range(4):
+                        try:
+                            snapshot_download(repo, local_dir=str(ziel), allow_patterns=muster, max_workers=4)
+                            break
+                        except Exception:
+                            if versuch == 3:
+                                raise
+                            time.sleep(3 * (versuch + 1))
+                    (ziel / ".fertig").write_text(datetime.now().isoformat(), "utf-8")
+            finally:
+                stop.set()
+            info["geladen"] = info["gesamt"] or info["geladen"]
+            info["status"] = "fertig"
+        except Exception as e:
+            traceback.print_exc()
+            info["status"] = "fehler"
+            info["fehler"] = f"Download fehlgeschlagen: {e}"
+
+    def _lade_pipeline(self, schluessel):
+        if self.aktuelles_modell == schluessel and self.pipe is not None:
+            return
+        torch = self.torch
+        from diffusers import AutoencoderKL, AutoPipelineForImage2Image, StableDiffusionXLPipeline
+
+        self.pipe = None
+        self.pipe_i2i = None
+        self.aktuelles_modell = None
+        if self.geraet == "cuda":
+            torch.cuda.empty_cache()
+        dtype = torch.float16 if self.geraet == "cuda" else torch.float32
+        if self.vae is None and not TESTMODELL:
+            self.vae = AutoencoderKL.from_pretrained(str(self._ordner("_vae")), torch_dtype=dtype)
+        m = MODELLE[schluessel]
+        extra = {} if TESTMODELL else {"vae": self.vae}
+        pipe = StableDiffusionXLPipeline.from_pretrained(
+            str(self._ordner(schluessel)), torch_dtype=dtype, **extra,
+            variant=None if TESTMODELL else m["variante"], use_safetensors=None if TESTMODELL else True,
+        )
+        pipe.scheduler = _scheduler(m["sampler"], pipe.scheduler.config)
+        pipe.to(self.geraet)
+        pipe.set_progress_bar_config(disable=True)
+        pipe.vae.enable_tiling()
+        self.pipe = pipe
+        self.pipe_i2i = AutoPipelineForImage2Image.from_pipe(pipe)
+        self.pipe_i2i.set_progress_bar_config(disable=True)
+        self.aktuelles_modell = schluessel
+
+    # ---------- Übersetzung ----------
+    def uebersetzen(self, text):
+        text = (text or "").strip()
+        if not text or not _wirkt_deutsch(text):
+            return text
+        if not self._uebersetzer_vorhanden():
+            return text
+        with self.uebersetzer_lock:
+            if self.uebersetzer is None:
+                from transformers import MarianMTModel, MarianTokenizer
+
+                pfad = str(self._ordner("_uebersetzer"))
+                self.uebersetzer = (MarianTokenizer.from_pretrained(pfad), MarianMTModel.from_pretrained(pfad).eval())
+            tok, modell = self.uebersetzer
+            zeilen = [z.strip() for z in re.split(r"[\n]+", text) if z.strip()]
+            import torch
+
+            with torch.inference_mode():
+                batch = tok(zeilen, return_tensors="pt", padding=True, truncation=True, max_length=400)
+                aus = modell.generate(**batch, max_new_tokens=400, num_beams=4)
+            return ", ".join(tok.decode(a, skip_special_tokens=True).strip().rstrip(".") for a in aus)
+
+    # ---------- Aufträge ----------
+    def auftrag(self, daten):
+        modus = daten.get("modus", "text")
+        modell = daten.get("modell") or STANDARD_MODELL
+        if modell not in MODELLE:
+            raise Fehler("Unbekanntes Modell")
+        if not (self._ist_installiert(modell) and self._ist_installiert("_vae")):
+            raise Fehler("Dieses Modell ist noch nicht heruntergeladen.")
+        if modus == "text" and not (daten.get("prompt") or "").strip():
+            raise Fehler("Bitte beschreibe, was auf dem Bild zu sehen sein soll.")
+        if modus in ("bild", "variation", "hochskalieren") and not (daten.get("eingabebild") or daten.get("quelle")):
+            raise Fehler("Bitte wähle zuerst ein Ausgangsbild.")
+        a = {
+            "id": uuid.uuid4().hex[:10],
+            "daten": daten,
+            "status": "wartet",
+            "bild_nr": 0,
+            "anzahl": max(1, min(int(daten.get("anzahl") or 1), 8)) if modus != "hochskalieren" else 1,
+            "schritt": 0,
+            "schritte": 0,
+            "vorschau": None,
+            "ergebnisse": [],
+            "fehler": None,
+            "hinweis": "Wartet …",
+            "erstellt": _jetzt(),
+        }
+        with self.bedingung:
+            self.auftraege.append(a)
+            self.bedingung.notify()
+        return a["id"]
+
+    def abbrechen_alle(self):
+        with self.bedingung:
+            for a in self.auftraege:
+                if a["status"] == "wartet":
+                    a["status"] = "abgebrochen"
+            self.auftraege = [a for a in self.auftraege if a["status"] != "abgebrochen"]
+        self.abbrechen = True
+
+    def status(self):
+        akt = self.aktiv
+        return {
+            "hardware": self.hardware(),
+            "aktiv": _auftrag_info(akt) if akt else None,
+            "wartend": len([a for a in self.auftraege if a["status"] == "wartet"]),
+            "galerie_version": self.galerie_version,
+            "zuletzt": self.zuletzt,
+            "downloads": self.downloads,
+            "modell_geladen": self.aktuelles_modell,
+            "uebersetzer": self._uebersetzer_vorhanden(),
+        }
+
+    def beschaeftigt(self):
+        return self.aktiv is not None or any(a["status"] == "wartet" for a in self.auftraege) or any(
+            d["status"] == "laeuft" for d in self.downloads.values()
+        )
+
+    def _arbeiter(self):
+        while True:
+            with self.bedingung:
+                while not self.auftraege:
+                    self.bedingung.wait()
+                a = self.auftraege.pop(0)
+            if a["status"] == "abgebrochen":
+                continue
+            self.abbrechen = False
+            self.aktiv = a
+            a["status"] = "laeuft"
+            try:
+                while self.torch is None:
+                    time.sleep(0.2)
+                self._ausfuehren(a)
+                a["status"] = "fertig"
+            except Abbruch:
+                a["status"] = "abgebrochen"
+            except Fehler as e:
+                a["status"] = "fehler"
+                a["fehler"] = str(e)
+            except Exception as e:
+                traceback.print_exc()
+                a["status"] = "fehler"
+                msg = str(e)
+                if "out of memory" in msg.lower():
+                    msg = "Grafikspeicher voll – bitte kleineres Format oder weniger Bilder wählen."
+                a["fehler"] = msg
+                if self.geraet == "cuda":
+                    self.torch.cuda.empty_cache()
+            finally:
+                self.letzte_aktivitaet = _jetzt()
+                self.zuletzt = _auftrag_info(a)
+                self.aktiv = None
+
+    def _ausfuehren(self, a):
+        d = a["daten"]
+        modus = d.get("modus", "text")
+        schluessel = d.get("modell") or STANDARD_MODELL
+        m = MODELLE[schluessel]
+        if self.aktuelles_modell != schluessel:
+            a["hinweis"] = f"Lade {m['name']} in die Grafikkarte …"
+            with self.lock:
+                self._lade_pipeline(schluessel)
+
+        quelle_meta = {}
+        eingabe = None
+        if d.get("quelle"):
+            pfad = self.bildpfad(d["quelle"])
+            eingabe = _rgb(Image.open(pfad))
+            quelle_meta = self.metadaten(pfad) or {}
+        elif d.get("eingabebild"):
+            roh = d["eingabebild"].split(",", 1)[-1]
+            eingabe = _rgb(Image.open(io.BytesIO(base64.b64decode(roh))))
+
+        prompt_original = (d.get("prompt") or "").strip()
+        if not prompt_original and quelle_meta:
+            prompt_original = quelle_meta.get("prompt_original", "")
+        negativ_original = (d.get("negativ") or "").strip()
+        uebersetzen = d.get("uebersetzen", True)
+        if uebersetzen and (prompt_original or negativ_original):
+            a["hinweis"] = "Übersetze Beschreibung …"
+        prompt_en = self.uebersetzen(prompt_original) if uebersetzen else prompt_original
+        negativ_en = self.uebersetzen(negativ_original) if uebersetzen else negativ_original
+        if not prompt_original and quelle_meta.get("prompt"):
+            prompt_en = quelle_meta["prompt"]
+
+        stil = d.get("stil") or quelle_meta.get("stil") or "kein"
+        zweck = d.get("zweck") or quelle_meta.get("zweck") or "bild"
+        if zweck not in ZWECKE:
+            zweck = "bild"
+        vorlage = STILE.get(stil, STILE["kein"])[1]
+        prompt = vorlage.replace("{p}", prompt_en or "") if prompt_en else vorlage.replace("{p}", "").strip(", ")
+        if ZWECKE[zweck][1]:
+            prompt = ZWECKE[zweck][1].replace("{p}", prompt)
+        if m.get("prompt_zusatz"):
+            prompt = f"{prompt}, {m['prompt_zusatz']}"
+        grafik = NEGATIV_GRAFIK if zweck != "bild" else None
+        negativ = ", ".join(x for x in [negativ_en, grafik, m.get("negativ_zusatz") or STANDARD_NEGATIV] if x)
+        freistellen = zweck != "bild" if d.get("freistellen") is None else bool(d.get("freistellen"))
+
+        qualitaet = d.get("qualitaet") or "normal"
+        schritte = int(d.get("schritte") or m["schritte"].get(qualitaet, m["schritte"]["normal"]))
+        cfg = float(d.get("cfg") or m["cfg"])
+        seed = d.get("seed")
+        seed = int(seed) if seed not in (None, "", -1, "-1") else random.randint(0, 2**32 - 1)
+
+        if modus == "text":
+            _, breite, hoehe = FORMATE.get(d.get("format") or "quadrat", FORMATE["quadrat"])
+            if zweck != "bild":
+                breite = hoehe = 1024
+            elif d.get("breite") and d.get("hoehe"):
+                breite, hoehe = _auf8(int(d["breite"])), _auf8(int(d["hoehe"]))
+        else:
+            staerke = float(d.get("staerke") or (0.3 if modus == "hochskalieren" else 0.55 if modus == "variation" else 0.6))
+            staerke = max(0.05, min(staerke, 1.0))
+            if modus == "hochskalieren":
+                faktor = min(2.0, math.sqrt(4_300_000 / (eingabe.width * eingabe.height)))
+                breite, hoehe = _auf8(eingabe.width * faktor), _auf8(eingabe.height * faktor)
+            else:
+                faktor = math.sqrt(1024 * 1024 / (eingabe.width * eingabe.height))
+                breite, hoehe = _auf8(eingabe.width * faktor), _auf8(eingabe.height * faktor)
+            eingabe = eingabe.resize((breite, hoehe), Image.LANCZOS)
+
+        if TESTMODELL:
+            breite, hoehe = min(breite, 128), min(hoehe, 128)
+            if eingabe is not None:
+                eingabe = eingabe.resize((breite, hoehe))
+
+        for i in range(a["anzahl"]):
+            if self.abbrechen:
+                raise Abbruch()
+            s = (seed + i) % (2**32)
+            a["bild_nr"] = i + 1
+            a["schritt"] = 0
+            a["vorschau"] = None
+            a["hinweis"] = f"Bild {i + 1} von {a['anzahl']} wird gemalt …"
+            gen = self.torch.Generator(device="cpu").manual_seed(s)
+            start = _jetzt()
+
+            def rueckruf(pipe, schritt, t, kw):
+                a["schritt"] = schritt + 1
+                a["schritte"] = getattr(pipe, "num_timesteps", None) or a["schritte"]
+                if self.abbrechen:
+                    pipe._interrupt = True
+                if schritt % 2 == 0 or schritt + 1 == a["schritte"]:
+                    try:
+                        a["vorschau"] = _vorschau(kw["latents"])
+                    except Exception:
+                        pass
+                return kw
+
+            with self.lock:
+                if modus == "text":
+                    a["schritte"] = schritte
+                    bild = self.pipe(
+                        prompt=prompt, negative_prompt=negativ, width=breite, height=hoehe,
+                        num_inference_steps=schritte, guidance_scale=cfg, generator=gen,
+                        callback_on_step_end=rueckruf,
+                    ).images[0]
+                else:
+                    n = min(150, math.ceil(schritte / staerke))
+                    a["schritte"] = int(n * staerke)
+                    bild = self.pipe_i2i(
+                        prompt=prompt, negative_prompt=negativ, image=eingabe, strength=staerke,
+                        num_inference_steps=n, guidance_scale=cfg, generator=gen,
+                        callback_on_step_end=rueckruf,
+                    ).images[0]
+            if self.abbrechen:
+                raise Abbruch()
+            if freistellen:
+                a["hinweis"] = f"Bild {i + 1}: Hintergrund wird entfernt …"
+                bild = self.freistellen(bild, rand=zweck == "sticker")
+            meta = {
+                "prompt_original": prompt_original, "prompt": prompt, "negativ_original": negativ_original,
+                "negativ": negativ, "stil": stil, "modell": schluessel, "modell_name": m["name"],
+                "seed": s, "schritte": schritte, "cfg": cfg, "breite": breite, "hoehe": hoehe,
+                "modus": modus, "qualitaet": qualitaet, "format": d.get("format"), "zweck": zweck,
+                "transparent": freistellen, "cfg_prozent": d.get("cfg_prozent"), "gruppe": a["id"],
+                "dauer_s": round(_jetzt() - start, 1), "erstellt": datetime.now().isoformat(timespec="seconds"),
+            }
+            if modus != "text":
+                meta["staerke"] = staerke
+                if d.get("quelle"):
+                    meta["quelle"] = d["quelle"]
+            name = self._speichern(bild, meta)
+            a["ergebnisse"].append(name)
+            self.galerie_version += 1
+
+    def _speichern(self, bild, meta, zusatz=None):
+        tag = datetime.now().strftime("%Y-%m-%d")
+        ordner = BILDER_ORDNER / tag
+        ordner.mkdir(parents=True, exist_ok=True)
+        basis = datetime.now().strftime("%H%M%S") + f"_{meta['seed']}" + (f"_{zusatz}" if zusatz else "")
+        pfad = ordner / f"{basis}.png"
+        n = 1
+        while pfad.exists():
+            pfad = ordner / f"{basis}_{n}.png"
+            n += 1
+        info = PngImagePlugin.PngInfo()
+        info.add_text("bildwerkstatt", json.dumps(meta, ensure_ascii=False))
+        info.add_text(
+            "parameters",
+            f"{meta['prompt']}\nNegative prompt: {meta['negativ']}\nSteps: {meta['schritte']}, CFG scale: {meta['cfg']}, "
+            f"Seed: {meta['seed']}, Size: {meta['breite']}x{meta['hoehe']}, Model: {meta['modell_name']}",
+        )
+        bild.save(pfad, pnginfo=info)
+        return pfad.relative_to(BILDER_ORDNER).as_posix()
+
+    # ---------- Freistellen & Export ----------
+    def _lade_freisteller(self):
+        if self.freisteller is not None:
+            return self.freisteller
+        import onnxruntime as ort
+
+        ziel = self._ordner("_freisteller") / "isnet-general-use.onnx"
+        if not ziel.exists():
+            self._datei_laden("_freisteller", FREISTELL_URL, ziel)
+        self.freisteller = ort.InferenceSession(str(ziel), providers=["CPUExecutionProvider"])
+        return self.freisteller
+
+    def _datei_laden(self, schluessel, url, ziel):
+        import urllib.request
+
+        info = {"status": "laeuft", "geladen": 0, "gesamt": 0, "fehler": None}
+        self.downloads[schluessel] = info
+        ziel.parent.mkdir(parents=True, exist_ok=True)
+        tmp = ziel.with_suffix(".teil")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as r, open(tmp, "wb") as f:
+                info["gesamt"] = int(r.headers.get("Content-Length") or 0)
+                while True:
+                    block = r.read(1 << 20)
+                    if not block:
+                        break
+                    f.write(block)
+                    info["geladen"] += len(block)
+            tmp.replace(ziel)
+            info["status"] = "fertig"
+        except Exception as e:
+            info["status"] = "fehler"
+            info["fehler"] = f"Download fehlgeschlagen: {e}"
+            raise Fehler(info["fehler"])
+
+    def freistellen(self, bild, rand=False):
+        import numpy as np
+
+        rgb = _rgb(bild)
+        with self.freisteller_lock:
+            sitzung = self._lade_freisteller()
+            x = np.asarray(rgb.resize((1024, 1024), Image.BILINEAR), dtype=np.float32) / 255.0
+            x = x - np.array([0.485, 0.456, 0.406], dtype=np.float32)
+            x = x.transpose(2, 0, 1)[None]
+            aus = sitzung.run(None, {sitzung.get_inputs()[0].name: x})[0][0, 0]
+        aus = (aus - aus.min()) / max(float(aus.max() - aus.min()), 1e-6)
+        maske = Image.fromarray((aus * 255).astype("uint8")).resize(rgb.size, Image.LANCZOS)
+        maske = maske.point(lambda v: 0 if v < 18 else 255 if v > 235 else v)
+        ergebnis = rgb.convert("RGBA")
+        ergebnis.putalpha(maske)
+        if rand:
+            ergebnis = _stickerrand(ergebnis)
+        return _zuschneiden(ergebnis)
+
+    def freistellen_datei(self, name):
+        pfad = self.bildpfad(name)
+        meta = dict(self.metadaten(pfad) or {})
+        with Image.open(pfad) as im:
+            bild = self.freistellen(im.copy(), rand=meta.get("zweck") == "sticker")
+        for k, v in (("prompt", ""), ("negativ", ""), ("schritte", 0), ("cfg", 0), ("modell_name", ""), ("seed", 0)):
+            meta.setdefault(k, v)
+        meta.update({"transparent": True, "quelle": name, "erstellt": datetime.now().isoformat(timespec="seconds")})
+        meta["breite"], meta["hoehe"] = bild.size
+        neu = self._speichern(bild, meta, zusatz="frei")
+        self.galerie_version += 1
+        return neu
+
+    def exportieren(self, name, art):
+        import zipfile
+        from PIL import ImageFilter
+
+        if art not in EXPORTE:
+            raise Fehler("Unbekanntes Exportformat")
+        titel, groessen = EXPORTE[art]
+        pfad = self.bildpfad(name)
+        with Image.open(pfad) as im:
+            bild = _quadratisch(im.convert("RGBA"))
+        stamm = pfad.stem
+        ordner = EXPORT_ORDNER / f"{stamm}_{art}"
+        ordner.mkdir(parents=True, exist_ok=True)
+        dateien = []
+        for g in groessen:
+            klein = bild.resize((g, g), Image.LANCZOS)
+            if g <= 56:
+                klein = klein.filter(ImageFilter.UnsharpMask(radius=0.6, percent=60, threshold=1))
+            ziel = ordner / f"{stamm}_{g}x{g}.png"
+            klein.save(ziel, optimize=True)
+            dateien.append(ziel)
+        zipdatei = EXPORT_ORDNER / f"{stamm}_{art}.zip"
+        with zipfile.ZipFile(zipdatei, "w", zipfile.ZIP_DEFLATED) as z:
+            for f in dateien:
+                z.write(f, f.name)
+        return {"titel": titel, "ordner": str(ordner), "zip": str(zipdatei),
+                "dateien": [f.name for f in dateien], "groessen": groessen}
+
+    # ---------- Sammlungen ----------
+    def sammlungen(self):
+        try:
+            daten = json.loads(SAMMLUNGEN.read_text("utf-8"))
+        except Exception:
+            daten = {}
+        daten.setdefault("Favoriten", [])
+        return daten
+
+    def sammlung_aendern(self, d):
+        daten = self.sammlungen()
+        aktion, name, bild = d.get("aktion"), (d.get("name") or "").strip(), d.get("bild")
+        if not name:
+            raise Fehler("Bitte gib der Sammlung einen Namen.")
+        if aktion == "anlegen":
+            daten.setdefault(name, [])
+        elif aktion == "loeschen":
+            daten.pop(name, None)
+        elif aktion in ("hinzu", "entfernen", "umschalten"):
+            liste = daten.setdefault(name, [])
+            if aktion == "umschalten":
+                aktion = "entfernen" if bild in liste else "hinzu"
+            if aktion == "hinzu" and bild not in liste:
+                liste.insert(0, bild)
+            if aktion == "entfernen" and bild in liste:
+                liste.remove(bild)
+        else:
+            raise Fehler("Unbekannte Aktion")
+        SAMMLUNGEN.write_text(json.dumps(daten, ensure_ascii=False, indent=2), "utf-8")
+        return daten
+
+    # ---------- Galerie ----------
+    def bildpfad(self, name):
+        pfad = (BILDER_ORDNER / name).resolve()
+        if BILDER_ORDNER.resolve() not in pfad.parents or not pfad.is_file():
+            raise Fehler("Bild nicht gefunden")
+        return pfad
+
+    def metadaten(self, pfad):
+        try:
+            schl = (str(pfad), pfad.stat().st_mtime)
+            if schl in self._metadaten_cache:
+                return self._metadaten_cache[schl]
+            with Image.open(pfad) as im:
+                roh = im.info.get("bildwerkstatt")
+                meta = json.loads(roh) if roh else {}
+                meta.setdefault("breite", im.width)
+                meta.setdefault("hoehe", im.height)
+            self._metadaten_cache[schl] = meta
+            return meta
+        except Exception:
+            return {}
+
+    def galerie(self, anzahl=300):
+        dateien = sorted((p for p in BILDER_ORDNER.rglob("*.png") if EXPORT_ORDNER not in p.parents), key=lambda p: p.stat().st_mtime, reverse=True)[:anzahl]
+        return [{"name": p.relative_to(BILDER_ORDNER).as_posix(), **self.metadaten(p)} for p in dateien]
+
+    def loeschen(self, name):
+        pfad = self.bildpfad(name)
+        pfad.unlink()
+        self.galerie_version += 1
+
+
+class Abbruch(Exception):
+    pass
+
+
+def _auftrag_info(a):
+    return {k: a[k] for k in ("id", "status", "bild_nr", "anzahl", "schritt", "schritte", "vorschau", "ergebnisse", "fehler", "hinweis")}
+
+
+def _rgb(bild):
+    if bild.mode in ("RGBA", "LA", "P", "PA"):
+        bild = bild.convert("RGBA")
+        grund = Image.new("RGBA", bild.size, (255, 255, 255, 255))
+        grund.alpha_composite(bild)
+        return grund.convert("RGB")
+    return bild.convert("RGB")
+
+
+def _stickerrand(bild):
+    from PIL import ImageFilter
+
+    staerke = max(9, (min(bild.size) // 40) | 1)
+    alpha = bild.getchannel("A").point(lambda v: 255 if v > 100 else 0)
+    rand = alpha.filter(ImageFilter.MaxFilter(staerke)).filter(ImageFilter.GaussianBlur(1.2))
+    weiss = Image.new("RGBA", bild.size, (255, 255, 255, 0))
+    weiss.putalpha(rand)
+    weiss.alpha_composite(bild)
+    return weiss
+
+
+def _zuschneiden(bild):
+    box = bild.getchannel("A").point(lambda v: 255 if v > 8 else 0).getbbox()
+    if not box:
+        return bild
+    return _quadratisch(bild.crop(box), rand=0.04)
+
+
+def _quadratisch(bild, rand=0.0):
+    if bild.width == bild.height and not rand:
+        return bild
+    seite = int(max(bild.size) * (1 + 2 * rand))
+    grund = Image.new("RGBA", (seite, seite), (0, 0, 0, 0))
+    grund.alpha_composite(bild.convert("RGBA"), ((seite - bild.width) // 2, (seite - bild.height) // 2))
+    return grund
+
+
+def _auf8(x):
+    return max(256, int(round(x / 8)) * 8)
+
+
+def _ordnergroesse(ordner):
+    gesamt = 0
+    if ordner.exists():
+        for wurzel, _, dateien in os.walk(ordner):
+            for f in dateien:
+                try:
+                    gesamt += os.path.getsize(os.path.join(wurzel, f))
+                except OSError:
+                    pass
+    return gesamt
+
+
+def _wirkt_deutsch(text):
+    if re.search(r"[äöüÄÖÜß]", text):
+        return True
+    woerter = re.findall(r"[a-zA-Z]+", text.lower())
+    if not woerter:
+        return False
+    de = sum(w in DEUTSCH for w in woerter)
+    en = sum(w in ENGLISCH for w in woerter)
+    if de > en:
+        return True
+    if en > de:
+        return False
+    return True
+
+
+def _scheduler(art, config):
+    from diffusers import DPMSolverMultistepScheduler, EulerAncestralDiscreteScheduler
+
+    if art == "euler_a":
+        return EulerAncestralDiscreteScheduler.from_config(config)
+    if art == "dpmpp_karras":
+        return DPMSolverMultistepScheduler.from_config(config, use_karras_sigmas=True, algorithm_type="dpmsolver++")
+    return DPMSolverMultistepScheduler.from_config(config)
+
+
+def _vorschau(latents):
+    import torch
+
+    lat = latents[0].float()
+    if lat.shape[0] != 4:
+        return None
+    faktoren = torch.tensor(SDXL_LATENT_RGB, device=lat.device)
+    bias = torch.tensor(SDXL_LATENT_BIAS, device=lat.device)
+    rgb = torch.einsum("chw,cr->hwr", lat, faktoren) + bias
+    rgb = ((rgb + 1) / 2).clamp(0, 1).mul(255).byte().cpu().numpy()
+    bild = Image.fromarray(rgb)
+    if bild.width < 192:
+        bild = bild.resize((bild.width * 2, bild.height * 2), Image.BILINEAR)
+    puffer = io.BytesIO()
+    bild.save(puffer, format="JPEG", quality=70)
+    return "data:image/jpeg;base64," + base64.b64encode(puffer.getvalue()).decode()

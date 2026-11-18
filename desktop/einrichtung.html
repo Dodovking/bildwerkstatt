@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="de"><head><meta charset="utf-8"><title>Lumen Studio</title>
+<style>
+*{box-sizing:border-box}html,body{margin:0;height:100%}
+body{background:radial-gradient(1200px 600px at 50% 30%,#1a1430 0,#0b0d16 60%);color:#eceff7;font:14px "Segoe UI Variable","Segoe UI",system-ui,sans-serif;display:grid;place-items:center;user-select:none}
+.karte{width:560px;background:#131726;border:1px solid #232a3d;border-radius:22px;padding:38px 40px 30px;box-shadow:0 30px 80px #0008}
+.kopf{display:flex;align-items:center;gap:14px;margin-bottom:26px}
+.logo{width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg,#ffb36b,#f0629a 55%,#7c5cff);display:grid;place-items:center;box-shadow:0 8px 30px #f0629a55}
+.logo svg{width:26px;height:26px}
+h1{margin:0;font-size:22px;letter-spacing:.12em}small{display:block;color:#8a92a9;font-size:11px;letter-spacing:.14em;margin-top:2px}
+#text{font-size:15px;font-weight:600;min-height:44px;line-height:1.45}
+.balken{height:8px;background:#232a3d;border-radius:8px;overflow:hidden;margin:16px 0 12px}
+.balken i{display:block;height:100%;width:35%;border-radius:8px;background:linear-gradient(90deg,#ffb36b,#f0629a 55%,#7c5cff);animation:lauf 1.6s ease-in-out infinite}
+@keyframes lauf{0%{margin-left:-35%}100%{margin-left:100%}}
+.schritte{list-style:none;padding:0;margin:18px 0 0;display:grid;gap:9px;color:#5f6780}
+.schritte li{display:flex;gap:10px;align-items:center}.schritte li::before{content:"";width:9px;height:9px;border-radius:50%;border:2px solid #2e3650}
+.schritte li.aktiv{color:#eceff7}.schritte li.aktiv::before{border-color:#f0629a;background:#f0629a;box-shadow:0 0 10px #f0629a}
+.schritte li.ok{color:#8a92a9}.schritte li.ok::before{border-color:#3ecf8e;background:#3ecf8e}
+#zeile{font:11.5px Consolas,monospace;color:#5f6780;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;height:16px}
+.fehler{display:none;margin-top:16px;background:#2a1420;border:1px solid #5a2236;border-radius:12px;padding:14px}
+.fehler pre{max-height:160px;overflow:auto;font-size:11px;color:#c9a0b0;white-space:pre-wrap;margin:10px 0}
+button{font:inherit;border:0;border-radius:10px;padding:10px 18px;font-weight:600;color:#fff;cursor:pointer;background:linear-gradient(90deg,#ffb36b,#f0629a 50%,#7c5cff)}
+button.leise{background:#232a3d;color:#c7ccd9;margin-left:6px}
+.fuss{margin-top:24px;color:#5f6780;font-size:11.5px;display:flex;justify-content:space-between}
+</style></head><body>
+<div class="karte">
+  <div class="kopf"><div class="logo"><svg viewBox="0 0 24 24"><path d="M12 2.5 21 20.5 12 16.2 3 20.5Z" fill="#fff"/></svg></div>
+    <div><h1>LUMEN</h1><small>STUDIO · KI BILDER</small></div></div>
+  <div id="text">Lumen wird gestartet …</div>
+  <div class="balken"><i id="balken"></i></div>
+  <div id="zeile"></div>
+  <ul class="schritte">
+    <li data-id="dateien">Programmdateien</li>
+    <li data-id="python">KI-Bibliotheken (nur beim ersten Start oder nach Updates)</li>
+    <li data-id="start">KI-Engine starten</li>
+  </ul>
+  <div class="fehler" id="fehler"><b>Da ist etwas schiefgelaufen</b><div id="fehlertext"></div><pre id="log"></pre>
+    <button id="nochmal">Erneut versuchen</button><button class="leise" id="protokoll">Protokoll öffnen</button></div>
+  <div class="fuss"><span>Alles läuft lokal auf deinem PC – ohne Kosten.</span><span>v{{VERSION}}</span></div>
+</div>
+<script>
+const w = window.chrome.webview, reihe = ["dateien", "python", "start", "fertig"];
+w.addEventListener("message", (e) => {
+  const n = e.data;
+  if (n.typ === "schritt") {
+    document.getElementById("text").textContent = n.text;
+    document.getElementById("fehler").style.display = "none";
+    const i = reihe.indexOf(n.id);
+    document.querySelectorAll(".schritte li").forEach((li) => {
+      const j = reihe.indexOf(li.dataset.id);
+      li.className = j < i ? "ok" : j === i ? "aktiv" : "";
+    });
+  }
+  if (n.typ === "zeile") document.getElementById("zeile").textContent = n.text;
+  if (n.typ === "fehler") {
+    document.getElementById("text").textContent = "Start fehlgeschlagen";
+    document.getElementById("fehlertext").textContent = n.text;
+    document.getElementById("log").textContent = n.log || "";
+    document.getElementById("fehler").style.display = "block";
+  }
+});
+document.getElementById("nochmal").onclick = () => w.postMessage({ typ: "neu-versuchen" });
+document.getElementById("protokoll").onclick = () => w.postMessage({ typ: "protokoll" });
+</script>
+</body></html>

@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lumen Studio</title>
+<link rel="icon" href="/web/icon.png">
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+<aside class="seite">
+  <div class="marke">
+    <img src="/web/logo.svg" alt="">
+    <div><b>LUMEN</b><small>STUDIO · KI BILDER</small></div>
+  </div>
+  <button id="neu" class="neu-knopf"><span class="ico">+</span> Neues Bild erstellen</button>
+
+  <div class="abschnitt">Arbeitsplatz</div>
+  <nav id="nav">
+    <a data-ansicht="generator" data-zweck="bild" class="aktiv"><span class="ico">◈</span>Bildgenerator</a>
+    <a data-ansicht="generator" data-zweck="emote"><span class="ico">☺</span>Emotes &amp; Sticker</a>
+    <a data-ansicht="kreationen"><span class="ico">▦</span>Meine Kreationen</a>
+    <a data-ansicht="sammlungen"><span class="ico">◌</span>Sammlungen</a>
+    <a data-ansicht="vorlagen"><span class="ico">⌘</span>Vorlagen</a>
+  </nav>
+
+  <div class="abschnitt">Zuletzt verwendet</div>
+  <div id="zuletzt" class="zuletzt"></div>
+
+  <div class="plan">
+    <div class="plan-kopf">✦ Lokal &amp; kostenlos</div>
+    <div id="plan-text" class="plan-text">Unbegrenzte Generierungen auf deinem PC</div>
+    <div class="balken"><i id="plan-balken"></i></div>
+    <div class="plan-fuss">
+      <span id="version">v–</span>
+      <button id="update-knopf" class="update-knopf" title="Nach Updates suchen">⟳ Update</button>
+    </div>
+  </div>
+</aside>
+
+<main>
+  <header class="kopf">
+    <div>
+      <div class="pfad">ARBEITSPLATZ &nbsp;/&nbsp; <span id="pfad">BILDERSTUDIO</span></div>
+      <h1 id="titel">Bildgenerator</h1>
+      <p id="untertitel">Verwandle deine Ideen in Bilder. Passe Stil, Format und Details an.</p>
+    </div>
+    <div class="kopf-rechts">
+      <button class="galerie-knopf" data-gehe="kreationen"><span>⌘</span> Galerie</button>
+      <div class="avatar" id="avatar" title="Starte …">L<i id="status-punkt"></i></div>
+    </div>
+  </header>
+
+  <!-- ===== Generator ===== -->
+  <section id="ansicht-generator" class="ansicht">
+    <div class="prompt-karte" id="prompt-karte">
+      <div class="prompt-links">
+        <div class="etikett" id="prompt-etikett">DEINE BILDPROMPT</div>
+        <div id="prompt-text" class="prompt-text leer">Beschreibe dein Bild – z. B. „Eine futuristische Stadt bei Sonnenuntergang, die sich im Wasser spiegelt“</div>
+        <textarea id="prompt" rows="2" placeholder="Beschreibe dein Bild auf Deutsch oder Englisch …" hidden></textarea>
+        <div id="uebersetzung" class="uebersetzung" hidden></div>
+      </div>
+      <div id="eingabe-chip" class="eingabe-chip" hidden><img id="eingabe-bild" alt=""><span>Ausgangsbild</span><button id="eingabe-weg" title="Entfernen">✕</button></div>
+      <label class="klein-knopf" title="Eigenes Bild als Vorlage verwenden (Bild → Bild)">⇪ Bild<input type="file" id="datei" accept="image/*" hidden></label>
+      <button id="bearbeiten" class="klein-knopf">✎ Bearbeiten</button>
+    </div>
+
+    <div class="arbeit">
+      <div class="buehne-spalte">
+        <div class="buehne" id="buehne">
+          <div class="buehne-innen" id="buehne-innen">
+            <img id="hauptbild" alt="" hidden>
+            <div id="leer" class="leer-zustand">
+              <div class="leer-logo"><img src="/web/logo.svg" alt=""></div>
+              <h3 id="leer-titel">Dein nächstes Meisterwerk</h3>
+              <p id="leer-text">Beschreibe oben, was du sehen möchtest, und klicke auf <b>Generieren</b>.<br>Alles läuft lokal auf deiner Grafikkarte – ohne Kosten, ohne Cloud.</p>
+            </div>
+          </div>
+          <div class="abzeichen-oben" id="bild-abzeichen" hidden><i></i><span></span></div>
+          <div class="fortschritt" id="fortschritt" hidden>
+            <div class="fortschritt-text"><span id="fs-text">Starte …</span><button id="abbrechen" class="link">Abbrechen</button></div>
+            <div class="balken"><i id="fs-balken"></i></div>
+          </div>
+          <div class="zoom" id="zoom">
+            <button data-zoom="-1" title="Verkleinern">−</button>
+            <span id="zoom-wert">100%</span>
+            <button data-zoom="1" title="Vergrößern">+</button>
+            <button id="vollbild" title="Vollbild">⤢</button>
+          </div>
+          <div class="chat-vorschau" id="chat-vorschau" hidden></div>
+          <div class="werkzeuge" id="werkzeuge">
+            <button data-aktion="favorit" id="favorit-knopf" title="Favorit">♡</button>
+            <button data-aktion="sammlung" title="Zur Sammlung hinzufügen">◌</button>
+            <button data-aktion="variationen" title="Variationen erzeugen">✧</button>
+            <button data-aktion="vorlage" title="Als Vorlage verwenden (Bild → Bild)">⇪</button>
+            <button data-aktion="uebernehmen" title="Einstellungen &amp; Seed übernehmen">↺</button>
+            <button data-aktion="ordner" title="Im Ordner zeigen">▤</button>
+            <button data-aktion="loeschen" class="gefahr" title="Löschen">🗑</button>
+          </div>
+        </div>
+      </div>
+
+      <aside class="fein">
+        <h2>Feineinstellungen</h2>
+        <p class="leise">Gestalte dein Ergebnis ganz genau</p>
+        <hr>
+        <div id="zweck-block" hidden>
+          <div class="etikett">ART</div>
+          <div class="segment" id="zweck"></div>
+        </div>
+        <div class="etikett">MODELL</div>
+        <div class="auswahl" id="modell-auswahl">
+          <button class="auswahl-knopf" id="modell-knopf"><span class="ico">✦</span><span id="modell-name">–</span><span class="pfeil">⌄</span></button>
+          <div class="auswahl-liste" id="modell-liste" hidden></div>
+        </div>
+        <div id="format-block">
+          <div class="etikett">BILDFORMAT</div>
+          <div class="formate" id="formate"></div>
+        </div>
+        <div class="etikett">STIL</div>
+        <div class="auswahl" id="stil-auswahl">
+          <button class="auswahl-knopf" id="stil-knopf"><span class="farbe" id="stil-farbe"></span><span id="stil-name">–</span><span class="pfeil">⌄</span></button>
+          <div class="auswahl-liste" id="stil-liste" hidden></div>
+        </div>
+        <div class="regler-kopf"><span class="etikett">VARIANTEN</span><b id="anzahl-wert">4 Bilder</b></div>
+        <input type="range" id="anzahl" min="1" max="4" step="1" value="4">
+        <div class="regler-kopf"><span class="etikett">PROMPT-STÄRKE</span><b id="cfg-wert">50%</b></div>
+        <input type="range" id="cfg" min="0" max="100" step="1" value="50">
+        <div id="staerke-block" hidden>
+          <div class="regler-kopf"><span class="etikett">VERÄNDERUNG DES AUSGANGSBILDS</span><b id="staerke-wert">60%</b></div>
+          <input type="range" id="staerke" min="10" max="95" step="1" value="60">
+        </div>
+        <details class="mehr">
+          <summary>Mehr Optionen</summary>
+          <div class="etikett">QUALITÄT</div>
+          <div class="segment" id="qualitaet">
+            <button data-wert="schnell">Schnell</button><button data-wert="normal">Normal</button><button data-wert="hoch">Hoch</button>
+          </div>
+          <div class="etikett">DAS SOLL NICHT IM BILD SEIN</div>
+          <textarea id="negativ" rows="2" placeholder="z. B. Text, Wasserzeichen, Menschen"></textarea>
+          <label class="schalter"><input type="checkbox" id="uebersetzen" checked> Deutsche Eingabe automatisch übersetzen</label>
+          <label class="schalter" id="frei-schalter" hidden><input type="checkbox" id="freistellen" checked> Hintergrund automatisch entfernen</label>
+        </details>
+        <hr>
+        <div class="seed"><span>◉ Seed <b id="seed-wert">Zufall</b></span><input id="seed" type="number" min="0" placeholder="Zufall" hidden><button id="seed-aendern" class="link">Ändern</button></div>
+        <button id="generieren" class="los"><span>✦</span> <span id="los-text">Generieren</span></button>
+        <div class="hinweis-tasten">Strg + Enter</div>
+      </aside>
+    </div>
+
+    <div class="unten">
+      <div class="varianten-spalte">
+        <div class="unten-kopf"><b>DEINE VARIANTEN</b><span class="leise">Pfeiltasten zum Vergleichen</span></div>
+        <div class="varianten" id="varianten"><div class="variante leer"></div><div class="variante leer"></div><div class="variante leer"></div><div class="variante leer"></div></div>
+      </div>
+      <div class="aktionen-karte">
+        <b>SCHNELL-AKTIONEN</b>
+        <div class="aktionen" id="aktionen">
+          <button data-aktion="hochskalieren">⇧ Hochskalieren</button>
+          <button data-aktion="freistellen">◩ Hintergrund entfernen</button>
+          <button data-aktion="teilen">↗ Teilen</button>
+          <button data-aktion="herunterladen">↓ Herunterladen</button>
+        </div>
+        <div class="export" id="export-block">
+          <b>EXPORT FÜR STREAMER</b>
+          <div class="aktionen" id="exporte"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===== Kreationen ===== -->
+  <section id="ansicht-kreationen" class="ansicht" hidden>
+    <div class="leiste">
+      <div class="segment" id="filter">
+        <button data-wert="alle" class="an">Alle</button><button data-wert="bild">Bilder</button><button data-wert="grafik">Emotes &amp; Sticker</button><button data-wert="favoriten">Favoriten</button>
+      </div>
+      <input id="suche" class="suche" placeholder="Suchen …">
+      <button class="klein-knopf" id="ordner-oeffnen">▤ Bilder-Ordner öffnen</button>
+    </div>
+    <div class="raster" id="raster"></div>
+  </section>
+
+  <!-- ===== Sammlungen ===== -->
+  <section id="ansicht-sammlungen" class="ansicht" hidden>
+    <div class="leiste">
+      <button class="klein-knopf" id="sammlung-zurueck" hidden>← Alle Sammlungen</button>
+      <h3 id="sammlung-titel" class="sammlung-titel"></h3>
+      <span class="spacer"></span>
+      <button class="klein-knopf" id="sammlung-neu">+ Neue Sammlung</button>
+      <button class="klein-knopf gefahr" id="sammlung-loeschen" hidden>Sammlung löschen</button>
+    </div>
+    <div class="raster" id="sammlungen-raster"></div>
+  </section>
+
+  <!-- ===== Vorlagen ===== -->
+  <section id="ansicht-vorlagen" class="ansicht" hidden>
+    <div class="raster vorlagen" id="vorlagen-raster"></div>
+  </section>
+
+  <footer class="fuss">
+    <span>LUMEN STUDIO &nbsp;·&nbsp; KI-gestützte Bildgestaltung &nbsp;·&nbsp; <span id="gpu-text">prüfe Grafikkarte …</span></span>
+    <span><a id="hilfe">Hilfe</a><a id="einstellungen">Einstellungen</a></span>
+  </footer>
+</main>
+
+<div id="vollansicht" class="vollansicht" hidden><img id="voll-bild" alt=""></div>
+<div id="dialog-hg" class="dialog-hg" hidden><div class="dialog" id="dialog"></div></div>
+<div id="meldung" class="meldung" hidden></div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>

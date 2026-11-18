@@ -1,0 +1,12 @@
+diffusers==0.43.0
+transformers==5.23.0
+accelerate==1.16.0
+huggingface-hub==2.4.0
+safetensors==0.8.0
+sentencepiece==0.2.3
+sacremoses==0.2.0
+pillow==13.0.0
+fastapi==0.164.0
+uvicorn[standard]==0.54.0
+onnxruntime==1.23.2
+numpy==2.5.5
