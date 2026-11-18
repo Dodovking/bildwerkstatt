@@ -34,7 +34,10 @@ async def _nur_lokal(anfrage, weiter):
     herkunft = anfrage.headers.get("origin")
     if host not in ERLAUBTE_HOSTS or (herkunft and herkunft.split("://", 1)[-1] not in ERLAUBTE_HOSTS):
         return JSONResponse({"fehler": "Zugriff verweigert"}, status_code=403)
-    return await weiter(anfrage)
+    antwort = await weiter(anfrage)
+    if anfrage.url.path.startswith("/web/"):
+        antwort.headers["Cache-Control"] = "no-cache"
+    return antwort
 
 
 @app.exception_handler(Fehler)

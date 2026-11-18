@@ -1,4 +1,5 @@
 import base64
+import gc
 import io
 import json
 import math
@@ -68,8 +69,22 @@ MODELLE = {
         "prompt_zusatz": "masterpiece, best quality, very aesthetic, absurdres",
         "negativ_zusatz": "nsfw, lowres, (bad), text, error, fewer, extra, missing, worst quality, jpeg artifacts, low quality, watermark, unfinished, displeasing, oldest, early, chromatic aberration, signature, extra digits, artistic error, username, scan, [abstract]",
     },
+    "flux": {
+        "name": "FLUX.1 schnell",
+        "titel": "Lumen Präzise",
+        "beschreibung": "Am genauesten – bekannte Figuren, mehrere Figuren, Text (ca. 30 s pro Bild)",
+        "typ": "flux",
+        "repo": "unsloth/FLUX.1-schnell",
+        "gguf": ("city96/FLUX.1-schnell-gguf", "flux1-schnell-Q6_K.gguf"),
+        "groesse_gb": 19.4,
+        "variante": None,
+        "schritte": {"schnell": 3, "normal": 4, "hoch": 6},
+        "cfg": 1.0,
+        "sampler": None,
+    },
 }
 STANDARD_MODELL = "lightning"
+_IMPORT_LOCK = threading.Lock()
 VAE_REPO = "madebyollin/sdxl-vae-fp16-fix"
 UEBERSETZER_REPO = "Helsinki-NLP/opus-mt-de-en"
 PROMPT_KI_REPO = "Qwen/Qwen3-4B-Instruct-2507"
@@ -82,13 +97,15 @@ PROMPT_KI_REGELN = (
     "You turn a user's image wish (often German, casual, maybe with typos) into one English prompt for Stable Diffusion XL. "
     "Output ONLY the prompt: no quotes, no explanation, no 'I want'. "
     "Replace every German or localized name of a known character, creature, brand, place or franchise with its official English name "
-    "and add a few words describing its look (e.g. Bulbasaur, small green quadruped Pokemon with a plant bulb on its back). "
+    "plus its franchise (e.g. 'Squirtle (Pokemon)', 'Mickey Mouse (Disney)'). "
+    "The image model already knows famous characters by name: never describe their body, colors or features yourself. "
+    "Never write color, tone or shade words (gray, monochrome, pastel, muted ...) unless the user wrote that color; a mood like sad is not a color. "
     "Keep every subject, action, count, color and place the user asked for and never add new subjects. "
     "Do not add art-style or medium words (realistic, photo, anime, painting, 3d) unless the user asked for a style. "
 )
 PROMPT_KI_BILD = PROMPT_KI_REGELN + "Add helpful visual details (composition, lighting, setting). Comma-separated phrases, at most 60 words."
 PROMPT_KI_GRAFIK = PROMPT_KI_REGELN + (
-    "This becomes a single emote or sticker on a plain background: describe only the subject, its pose, expression and colors; "
+    "This becomes a single emote or sticker on a plain background: describe only the subject, its pose and expression; "
     "no background, no scenery. Comma-separated phrases, at most 30 words."
 )
 
@@ -174,6 +191,7 @@ class Werk:
         self.vram_gb = None
         self.pipe = None
         self.pipe_i2i = None
+        self.pipe_offload = False
         self.aktuelles_modell = None
         self.vae = None
         self.lock = threading.Lock()
@@ -261,20 +279,42 @@ class Werk:
         m = MODELLE[schluessel]
         if TESTMODELL:
             return TESTMODELL, None
+        if m.get("typ") == "flux":
+            return m["repo"], [
+                "model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*", "text_encoder/*",
+                "text_encoder_2/*", "vae/*", "transformer/config.json",
+            ]
         v = f".{m['variante']}" if m["variante"] else ""
         muster = ["model_index.json", "scheduler/*", "tokenizer/*", "tokenizer_2/*"]
         for teil, datei in (("text_encoder", "model"), ("text_encoder_2", "model"), ("unet", "diffusion_pytorch_model"), ("vae", "diffusion_pytorch_model")):
             muster += [f"{teil}/config.json", f"{teil}/{datei}{v}.safetensors"]
         return m["repo"], muster
 
+    def _download_plaene(self, schluessel):
+        plaene = [self._download_plan(schluessel)]
+        m = MODELLE.get(schluessel) or {}
+        if m.get("gguf") and not TESTMODELL:
+            plaene.append((m["gguf"][0], [m["gguf"][1]]))
+        return plaene
+
+    def _braucht_vae(self, schluessel):
+        return MODELLE[schluessel].get("typ") != "flux"
+
+    def _modell_installiert(self, schluessel):
+        return self._ist_installiert(schluessel) and (not self._braucht_vae(schluessel) or self._ist_installiert("_vae"))
+
+    def _flux_moeglich(self):
+        return self.geraet == "cuda" and (self.vram_gb or 0) >= 11.5
+
     def modelle(self):
         liste = []
         for k, m in MODELLE.items():
             liste.append({
                 "id": k, "name": m["name"], "titel": m["titel"], "beschreibung": m["beschreibung"], "cfg": m["cfg"],
-                "installiert": self._ist_installiert(k) and self._ist_installiert("_vae"),
+                "installiert": self._modell_installiert(k),
                 "download": self.downloads.get(k),
-                "groesse_gb": 7.0,
+                "groesse_gb": m.get("groesse_gb", 7.0),
+                "verfuegbar": m.get("typ") != "flux" or self._flux_moeglich(),
             })
         return liste
 
@@ -294,32 +334,34 @@ class Werk:
         info = self.downloads[schluessel]
         try:
             teile = [schluessel]
-            if schluessel in MODELLE and not self._ist_installiert("_vae"):
+            if schluessel in MODELLE and self._braucht_vae(schluessel) and not self._ist_installiert("_vae"):
                 teile.append("_vae")
             plaene = []
             for t in teile:
-                repo, muster = self._download_plan(t)
-                gesamt = 0
-                try:
-                    mi = HfApi().model_info(repo, files_metadata=True)
-                    for s in mi.siblings:
-                        if muster is None or any(fnmatch.fnmatch(s.rfilename, p) for p in muster):
-                            gesamt += s.size or 0
-                except Exception:
-                    pass
-                plaene.append((t, repo, muster, gesamt))
+                liste = self._download_plaene(t)
+                for nr, (repo, muster) in enumerate(liste):
+                    gesamt = 0
+                    try:
+                        mi = HfApi().model_info(repo, files_metadata=True)
+                        for s in mi.siblings:
+                            if muster is None or any(fnmatch.fnmatch(s.rfilename, p) for p in muster):
+                                gesamt += s.size or 0
+                    except Exception:
+                        pass
+                    plaene.append((t, repo, muster, gesamt, nr == len(liste) - 1))
             info["gesamt"] = sum(p[3] for p in plaene)
+            ordner = sorted({p[0] for p in plaene})
 
             stop = threading.Event()
 
             def messen():
                 while not stop.is_set():
-                    info["geladen"] = sum(_ordnergroesse(self._ordner(p[0])) for p in plaene)
+                    info["geladen"] = sum(_ordnergroesse(self._ordner(t)) for t in ordner)
                     stop.wait(0.7)
 
             threading.Thread(target=messen, daemon=True).start()
             try:
-                for t, repo, muster, _ in plaene:
+                for t, repo, muster, _, letzter in plaene:
                     ziel = self._ordner(t)
                     ziel.mkdir(parents=True, exist_ok=True)
                     for versuch in range(4):
@@ -330,7 +372,8 @@ class Werk:
                             if versuch == 3:
                                 raise
                             time.sleep(3 * (versuch + 1))
-                    (ziel / ".fertig").write_text(datetime.now().isoformat(), "utf-8")
+                    if letzter:
+                        (ziel / ".fertig").write_text(datetime.now().isoformat(), "utf-8")
             finally:
                 stop.set()
             info["geladen"] = info["gesamt"] or info["geladen"]
@@ -349,13 +392,18 @@ class Werk:
 
         self.pipe = None
         self.pipe_i2i = None
+        self.pipe_offload = False
         self.aktuelles_modell = None
+        gc.collect()
         if self.geraet == "cuda":
             torch.cuda.empty_cache()
+        m = MODELLE[schluessel]
+        if m.get("typ") == "flux" and not TESTMODELL:
+            self._lade_flux(schluessel, m)
+            return
         dtype = torch.float16 if self.geraet == "cuda" else torch.float32
         if self.vae is None and not TESTMODELL:
             self.vae = AutoencoderKL.from_pretrained(str(self._ordner("_vae")), torch_dtype=dtype)
-        m = MODELLE[schluessel]
         extra = {} if TESTMODELL else {"vae": self.vae}
         pipe = StableDiffusionXLPipeline.from_pretrained(
             str(self._ordner(schluessel)), torch_dtype=dtype, **extra,
@@ -371,6 +419,25 @@ class Werk:
         self.pipe = pipe
         self.pipe_i2i = AutoPipelineForImage2Image.from_pipe(pipe)
         self.pipe_i2i.set_progress_bar_config(disable=True)
+        self.aktuelles_modell = schluessel
+
+    def _lade_flux(self, schluessel, m):
+        torch = self.torch
+        from diffusers import FluxPipeline, FluxTransformer2DModel, GGUFQuantizationConfig
+
+        with self.prompt_ki_lock:
+            self._ki_auslagern(ganz=True)
+        ordner = self._ordner(schluessel)
+        transformer = FluxTransformer2DModel.from_single_file(
+            str(ordner / m["gguf"][1]), config=str(ordner), subfolder="transformer", torch_dtype=torch.bfloat16,
+            quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
+        )
+        pipe = FluxPipeline.from_pretrained(str(ordner), transformer=transformer, torch_dtype=torch.bfloat16)
+        pipe.enable_model_cpu_offload()
+        pipe.vae.enable_tiling()
+        pipe.set_progress_bar_config(disable=True)
+        self.pipe = pipe
+        self.pipe_offload = True
         self.aktuelles_modell = schluessel
 
     # ---------- Prompt-KI ----------
@@ -406,7 +473,8 @@ class Werk:
         torch = self.torch
         with self.lock, self.prompt_ki_lock:
             if self.prompt_ki is None:
-                from transformers import AutoModelForCausalLM, AutoTokenizer
+                with _IMPORT_LOCK:
+                    from transformers import AutoModelForCausalLM, AutoTokenizer
 
                 pfad = str(self._ordner("_prompt_ki"))
                 self.prompt_ki = (AutoTokenizer.from_pretrained(pfad), AutoModelForCausalLM.from_pretrained(pfad, dtype=torch.bfloat16).eval())
@@ -427,13 +495,20 @@ class Werk:
         zeile = zeile.strip().strip('"\'„“”`').rstrip(".").strip()
         return zeile if 3 <= len(zeile) <= 700 else None
 
-    def _ki_auslagern(self):
-        if self.prompt_ki and self.prompt_ki[1].device.type == "cuda":
+    def _ki_auslagern(self, ganz=False):
+        if not self.prompt_ki:
+            return
+        if ganz or self.pipe_offload:
+            self.prompt_ki = None
+            gc.collect()
+        elif self.prompt_ki[1].device.type == "cuda":
             self.prompt_ki[1].to("cpu")
-            self.torch.cuda.empty_cache()
+        else:
+            return
+        self.torch.cuda.empty_cache()
 
     def _pipe_auslagern(self):
-        if self.pipe is not None and self.pipe.device.type == "cuda":
+        if self.pipe is not None and not self.pipe_offload and self.pipe.device.type == "cuda":
             self.pipe.to("cpu")
             self.torch.cuda.empty_cache()
 
@@ -442,7 +517,7 @@ class Werk:
             return
         with self.prompt_ki_lock:
             self._ki_auslagern()
-        if self.pipe.device.type != "cuda":
+        if not self.pipe_offload and self.pipe.device.type != "cuda":
             self.pipe.to("cuda")
 
     # ---------- Übersetzung ----------
@@ -454,7 +529,8 @@ class Werk:
             return text
         with self.uebersetzer_lock:
             if self.uebersetzer is None:
-                from transformers import MarianMTModel, MarianTokenizer
+                with _IMPORT_LOCK:
+                    from transformers import MarianMTModel, MarianTokenizer
 
                 pfad = str(self._ordner("_uebersetzer"))
                 self.uebersetzer = (MarianTokenizer.from_pretrained(pfad), MarianMTModel.from_pretrained(pfad).eval())
@@ -473,7 +549,15 @@ class Werk:
         modell = daten.get("modell") or STANDARD_MODELL
         if modell not in MODELLE:
             raise Fehler("Unbekanntes Modell")
-        if not (self._ist_installiert(modell) and self._ist_installiert("_vae")):
+        if MODELLE[modell].get("typ") == "flux":
+            if not self._flux_moeglich():
+                raise Fehler("Lumen Präzise (FLUX) braucht eine NVIDIA-Grafikkarte mit mindestens 12 GB Grafikspeicher.")
+            if modus != "text":
+                ersatz = next((k for k in MODELLE if self._braucht_vae(k) and self._modell_installiert(k)), None)
+                if not ersatz:
+                    raise Fehler("Bild → Bild, Variation und Hochskalieren gehen mit einem der anderen Modelle.")
+                modell = daten["modell"] = ersatz
+        if not self._modell_installiert(modell):
             raise Fehler("Dieses Modell ist noch nicht heruntergeladen.")
         if modus == "text" and not (daten.get("prompt") or "").strip():
             raise Fehler("Bitte beschreibe, was auf dem Bild zu sehen sein soll.")
@@ -660,7 +744,13 @@ class Werk:
                 return kw
 
             with self.lock:
-                if modus == "text":
+                if self.pipe_offload:
+                    a["schritte"] = schritte
+                    bild = self.pipe(
+                        prompt=prompt, width=breite, height=hoehe, num_inference_steps=schritte, guidance_scale=0.0,
+                        generator=gen, max_sequence_length=256, callback_on_step_end=rueckruf,
+                    ).images[0]
+                elif modus == "text":
                     a["schritte"] = schritte
                     bild = self.pipe(
                         prompt=prompt, negative_prompt=negativ, width=breite, height=hoehe,

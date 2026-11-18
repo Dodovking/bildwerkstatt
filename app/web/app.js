@@ -43,7 +43,7 @@ const ANSICHTEN = {
 };
 
 const z = {
-  ansicht: "generator", grafik: false, grafikZweck: "emote", stil: "kino", grafikStil: "kein", format: "hoch",
+  ansicht: "generator", modellV: 0, grafik: false, grafikZweck: "emote", stil: "kein", grafikStil: "kein", format: "hoch",
   qualitaet: "normal", anzahl: 4, cfg: 50, staerke: 60, modell: null, seed: "", prompt: "", negativ: "", uebersetzen: true, freistellen: true,
   eingabebild: null, quelle: null, info: null, galerie: [], galerieVersion: -1, auswahl: null, auftrag: null,
   zoom: 1, verschiebung: [0, 0], filter: "alle", suche: "", sammlungen: {}, sammlungOffen: null, update: null, status: null,
@@ -88,7 +88,7 @@ function speichern() {
   clearTimeout(speichernTimer);
   speichernTimer = setTimeout(() => {
     const { stil, grafikStil, grafikZweck, format, qualitaet, anzahl, cfg, modell, uebersetzen, freistellen, negativ } = z;
-    api("/api/einstellungen", { body: { ui: { stil, grafikStil, grafikZweck, format, qualitaet, anzahl, cfg, modell, uebersetzen, freistellen, negativ } } }).catch(() => {});
+    api("/api/einstellungen", { body: { ui: { stilV: 2, modellV: z.modellV, stil, grafikStil, grafikZweck, format, qualitaet, anzahl, cfg, modell, uebersetzen, freistellen, negativ } } }).catch(() => {});
   }, 600);
 }
 
@@ -159,7 +159,7 @@ function modellZeichnen() {
   const m = modellInfo(z.modell) || modelle[0];
   if (!m) return;
   $("#modell-name").textContent = `${m.titel} · ${m.name.replace(/ XL.*$/, " XL")}`;
-  $("#modell-liste").innerHTML = modelle.map((x) => {
+  $("#modell-liste").innerHTML = modelle.filter((x) => x.verfuegbar !== false).map((x) => {
     const d = dl[x.id];
     let zusatz = x.installiert ? '<span class="zusatz ok">✓ bereit</span>' : `<span class="zusatz">⇩ laden · ${x.groesse_gb} GB</span>`;
     if (d && d.status === "laeuft") zusatz = `<span class="zusatz">${prozent(d)} %</span>`;
@@ -351,6 +351,15 @@ function hardwareZeichnen(h) {
   let t = "Grafikkarte wird geprüft …";
   if (h?.bereit) t = h.gpu ? `${h.gpu} · ${h.vram_gb} GB` : "Keine NVIDIA-Grafikkarte gefunden – CPU-Modus (sehr langsam)";
   $("#gpu-text").textContent = t; $("#avatar").title = t;
+  if (h?.bereit) fluxAlsStandard();
+}
+async function fluxAlsStandard() {
+  if (!z.info || z.modellV >= 3) return;
+  z.modellV = 3;
+  z.info = await api("/api/info");
+  const f = modellInfo("flux");
+  if (f?.installiert && f?.verfuegbar) z.modell = "flux";
+  modellZeichnen(); speichern();
 }
 
 // ---------- Galerie ----------
@@ -560,7 +569,7 @@ function willkommen() {
 function willkommenAktualisieren() {
   const liste = $("#willkommen-liste"); if (!liste) return;
   const dl = z.status?.downloads || {};
-  liste.innerHTML = z.info.modelle.map((m) => {
+  liste.innerHTML = z.info.modelle.filter((m) => m.verfuegbar !== false).map((m) => {
     const d = dl[m.id]; const laeuft = d && d.status === "laeuft";
     const knopf = m.installiert ? '<span class="zusatz ok" style="color:var(--gruen)">✓ bereit</span>'
       : laeuft ? `<b>${prozent(d)} %</b>` : `<button class="klein-knopf" data-laden="${m.id}">${m.id === "lightning" ? "Empfohlen · " : ""}Laden</button>`;
@@ -736,6 +745,8 @@ async function start() {
   try { z.info = await api("/api/info"); } catch { setTimeout(start, 1000); return; }
   const u = z.info.einstellungen?.ui || {};
   Object.assign(z, Object.fromEntries(Object.entries(u).filter(([k, v]) => v !== undefined && k in z)));
+  if (!u.stilV && z.stil === "kino") z.stil = "kein";
+  if (!u.stilV) speichern();
   if (!modellInfo(z.modell)) {
     const inst = z.info.modelle.find((m) => m.installiert);
     z.modell = inst ? inst.id : z.info.standard_modell;
