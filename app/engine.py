@@ -557,6 +557,7 @@ class Werk:
                 if not ersatz:
                     raise Fehler("Bild → Bild, Variation und Hochskalieren gehen mit einem der anderen Modelle.")
                 modell = daten["modell"] = ersatz
+                daten.pop("cfg", None)
         if not self._modell_installiert(modell):
             raise Fehler("Dieses Modell ist noch nicht heruntergeladen.")
         if modus == "text" and not (daten.get("prompt") or "").strip():
